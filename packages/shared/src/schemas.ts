@@ -304,6 +304,7 @@ export interface StoreListingDTO {
   originalPriceCents: number | null;
   currency: string;
   inStock: boolean;
+  color?: string | null;
   url: string;
   imageUrl: string | null;
   lastCheckedAt: string;

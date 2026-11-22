@@ -473,3 +473,390 @@ describe("Model token sanity", () => {
     expect(looksLikeModelToken("LRGN6325Z")).toBe(true);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Candidate discovery (pg_trgm + reglas estrictas)                           */
+/* -------------------------------------------------------------------------- */
+
+import {
+  candidateCompatibility,
+  candidateScreenSize,
+  candidateSeriesTokens,
+  type CandidateView,
+} from "./candidates";
+
+const view = (overrides: Partial<CandidateView> = {}): CandidateView => ({
+  id: "product-a",
+  matchKey: "samsung::galaxy-s25-256gb",
+  canonicalName: "Samsung Galaxy S25 256GB",
+  brand: "Samsung",
+  modelNumber: "S25",
+  category: "celulares",
+  specs: { storage: "256gb", color: "negro" },
+  bestPriceCents: 100_000,
+  storeSlugs: ["multimax"],
+  ...overrides,
+});
+
+describe("Candidate discovery: accepts high-precision pairs", () => {
+  test("same brand/model/storage, disjoint stores and close price", () => {
+    const decision = candidateCompatibility(view(), view({ id: "b", storeSlugs: ["titan"] }));
+    expect(decision).toEqual({ ok: true, reason: "ok" });
+  });
+
+  test("accepts pairs at exactly the 1.65x price limit", () => {
+    const decision = candidateCompatibility(
+      view(),
+      view({ id: "b", storeSlugs: ["titan"], bestPriceCents: 165_000 })
+    );
+    expect(decision.ok).toBe(true);
+  });
+
+  test("accepts when only one side declares the panel technology", () => {
+    const decision = candidateCompatibility(
+      view({
+        category: "televisores",
+        modelNumber: "U8000F",
+        canonicalName: 'Televisor Samsung 55" U8000F',
+        specs: { screenSizeInches: 55, panelTechnology: null },
+        storeSlugs: ["titan"],
+      }),
+      view({
+        id: "b",
+        category: "televisores",
+        modelNumber: "U8000F",
+        canonicalName: 'Televisor Samsung 55" U8000F QLED',
+        specs: { screenSizeInches: 55, panelTechnology: "qled" },
+        storeSlugs: ["panafoto"],
+      })
+    );
+    expect(decision.ok).toBe(true);
+  });
+
+  test("equal GTIN is enough even with different titles", () => {
+    const decision = candidateCompatibility(
+      view({
+        canonicalName: "Producto Alfa",
+        modelNumber: null,
+        specs: { gtin: "0194253012345" },
+      }),
+      view({
+        id: "b",
+        canonicalName: "Producto Beta",
+        modelNumber: null,
+        storeSlugs: ["titan"],
+        specs: { gtin: "0194253012345" },
+      })
+    );
+    expect(decision.ok).toBe(true);
+  });
+
+  test("series fallback works when both model numbers are missing", () => {
+    const decision = candidateCompatibility(
+      view({ canonicalName: "Galaxy S25 256GB", modelNumber: null }),
+      view({
+        id: "b",
+        canonicalName: "S25 256GB",
+        modelNumber: null,
+        storeSlugs: ["titan"],
+      })
+    );
+    expect(decision.ok).toBe(true);
+  });
+
+  test("accepts laptop pairs with same model and storage", () => {
+    const decision = candidateCompatibility(
+      view({
+        category: "computadoras",
+        modelNumber: "15-FC0287LA",
+        canonicalName: "Laptop HP 15-FC0287LA 8GB 512GB",
+        specs: { storage: "512gb", ram: "8gb" },
+      }),
+      view({
+        id: "b",
+        category: "computadoras",
+        modelNumber: "15-FC0287LA",
+        canonicalName: "HP 15-FC0287LA 512GB",
+        specs: { storage: "512gb" },
+        storeSlugs: ["titan"],
+      })
+    );
+    expect(decision.ok).toBe(true);
+  });
+
+  test("accepts same model with different colors", () => {
+    const decision = candidateCompatibility(
+      view({ specs: { storage: "256gb", color: "negro" } }),
+      view({ id: "b", storeSlugs: ["titan"], specs: { storage: "256gb", color: "teal" } })
+    );
+    expect(decision.ok).toBe(true);
+  });
+
+  test("accepts when similarity is above the configured minimum", () => {
+    const decision = candidateCompatibility(
+      view(),
+      view({ id: "b", storeSlugs: ["titan"] }),
+      { similarity: 0.8, minSimilarity: 0.35 }
+    );
+    expect(decision.ok).toBe(true);
+  });
+});
+
+describe("Candidate discovery: strict rejections", () => {
+  test("never merges a product with itself", () => {
+    expect(candidateCompatibility(view(), view()).reason).toBe("same-product");
+  });
+
+  test("rejects different categories", () => {
+    expect(
+      candidateCompatibility(view(), view({ id: "b", category: "televisores" })).reason
+    ).toBe("category-mismatch");
+  });
+
+  test("rejects categories outside celulares/TV/laptops", () => {
+    expect(
+      candidateCompatibility(
+        view({ category: "perifericos", specs: {} }),
+        view({ id: "b", category: "perifericos", specs: {} })
+      ).reason
+    ).toBe("category-not-candidate");
+  });
+
+  test("rejects accessories (fundas, cables)", () => {
+    expect(
+      candidateCompatibility(view({ specs: { storage: "256gb", isAccessory: true } }), view({
+        id: "b",
+        storeSlugs: ["titan"],
+      })).reason
+    ).toBe("accessory");
+  });
+
+  test("rejects missing or different brands", () => {
+    expect(
+      candidateCompatibility(view({ brand: null }), view({ id: "b", storeSlugs: ["titan"] })).reason
+    ).toBe("brand-mismatch");
+    expect(
+      candidateCompatibility(view(), view({ id: "b", brand: "Apple", storeSlugs: ["titan"] }))
+        .reason
+    ).toBe("brand-mismatch");
+  });
+
+  test("rejects pairs that already share a store", () => {
+    expect(
+      candidateCompatibility(view(), view({ id: "b", storeSlugs: ["multimax"] })).reason
+    ).toBe("shared-store");
+  });
+
+  test("rejects different GTINs", () => {
+    expect(
+      candidateCompatibility(
+        view({ specs: { storage: "256gb", gtin: "0194253012345" } }),
+        view({
+          id: "b",
+          storeSlugs: ["titan"],
+          specs: { storage: "256gb", gtin: "0194253012346" },
+        })
+      ).reason
+    ).toBe("gtin-mismatch");
+  });
+
+  test("rejects different storage", () => {
+    expect(
+      candidateCompatibility(
+        view({ specs: { storage: "256gb" } }),
+        view({ id: "b", storeSlugs: ["titan"], specs: { storage: "512gb" } })
+      ).reason
+    ).toBe("storage-mismatch");
+  });
+
+  test("rejects different screen sizes (55 vs 65)", () => {
+    expect(
+      candidateCompatibility(
+        view({
+          category: "televisores",
+          modelNumber: "U8000F",
+          canonicalName: 'Televisor Samsung 55" U8000F',
+          specs: { screenSizeInches: 55 },
+          storeSlugs: ["titan"],
+        }),
+        view({
+          id: "b",
+          category: "televisores",
+          modelNumber: "U8000F",
+          canonicalName: 'Televisor Samsung 65" U8000F',
+          specs: { screenSizeInches: 65 },
+          storeSlugs: ["panafoto"],
+        })
+      ).reason
+    ).toBe("size-mismatch");
+  });
+
+  test("rejects different panel technologies (QLED vs OLED)", () => {
+    expect(
+      candidateCompatibility(
+        view({
+          category: "televisores",
+          modelNumber: "U8000F",
+          canonicalName: 'Televisor Samsung 55" U8000F QLED',
+          specs: { screenSizeInches: 55, panelTechnology: "qled" },
+          storeSlugs: ["titan"],
+        }),
+        view({
+          id: "b",
+          category: "televisores",
+          modelNumber: "U8000F",
+          canonicalName: 'Televisor Samsung 55" U8000F OLED',
+          specs: { screenSizeInches: 55, panelTechnology: "oled" },
+          storeSlugs: ["panafoto"],
+        })
+      ).reason
+    ).toBe("panel-mismatch");
+  });
+
+  test("rejects different model numbers", () => {
+    expect(
+      candidateCompatibility(
+        view({
+          category: "computadoras",
+          modelNumber: "15-FC0287LA",
+          canonicalName: "Laptop HP 15-FC0287LA",
+          specs: { storage: "512gb" },
+        }),
+        view({
+          id: "b",
+          category: "computadoras",
+          modelNumber: "15-FC0288LA",
+          canonicalName: "Laptop HP 15-FC0288LA",
+          specs: { storage: "512gb" },
+          storeSlugs: ["titan"],
+        })
+      ).reason
+    ).toBe("model-mismatch");
+  });
+
+  test("rejects no shared series when both models are missing", () => {
+    expect(
+      candidateCompatibility(
+        view({ canonicalName: "Modelo X100", modelNumber: null, specs: {} }),
+        view({
+          id: "b",
+          canonicalName: "Modelo Y200",
+          modelNumber: null,
+          specs: {},
+          storeSlugs: ["titan"],
+        })
+      ).reason
+    ).toBe("no-shared-series");
+  });
+
+  test("rejects iPhone tiers (17 vs 17 Pro)", () => {
+    expect(
+      candidateCompatibility(
+        view({
+          brand: "Apple",
+          modelNumber: null,
+          canonicalName: "iPhone 17 256GB",
+          specs: { storage: "256gb" },
+        }),
+        view({
+          id: "b",
+          brand: "Apple",
+          modelNumber: null,
+          canonicalName: "iPhone 17 Pro 256GB",
+          specs: { storage: "256gb" },
+          storeSlugs: ["titan"],
+        })
+      ).reason
+    ).toBe("iphone-variant-mismatch");
+  });
+
+  test("rejects Galaxy tiers (S25 FE vs S25)", () => {
+    expect(
+      candidateCompatibility(
+        view({ modelNumber: null, canonicalName: "Galaxy S25 FE 256GB", specs: { storage: "256gb" } }),
+        view({
+          id: "b",
+          modelNumber: null,
+          canonicalName: "Galaxy S25 256GB",
+          specs: { storage: "256gb" },
+          storeSlugs: ["titan"],
+        })
+      ).reason
+    ).toBe("galaxy-variant-mismatch");
+  });
+
+  test("rejects price ratios above 1.65x", () => {
+    expect(
+      candidateCompatibility(
+        view(),
+        view({ id: "b", storeSlugs: ["titan"], bestPriceCents: 170_000 })
+      ).reason
+    ).toBe("price-ratio-1.70");
+  });
+
+  test("rejects missing prices", () => {
+    expect(
+      candidateCompatibility(view({ bestPriceCents: null }), view({ id: "b", storeSlugs: ["titan"] }))
+        .reason
+    ).toBe("missing-price");
+  });
+
+  test("rejects low title similarity when provided", () => {
+    expect(
+      candidateCompatibility(view(), view({ id: "b", storeSlugs: ["titan"] }), {
+        similarity: 0.2,
+      }).reason
+    ).toBe("low-title-similarity");
+  });
+});
+
+describe("Candidate screen size extraction", () => {
+  test("reads laptop inches from canonical names", () => {
+    expect(candidateScreenSize('MacBook Neo 13" Pulgadas Apple 256GB')).toBe(13);
+    expect(candidateScreenSize('Laptop HP 15.6" FHD')).toBe(15.6);
+    expect(candidateScreenSize('Monitor Samsung 27 pulgadas')).toBe(27);
+  });
+
+  test("returns null when no size is present", () => {
+    expect(candidateScreenSize("iPhone 17 256GB")).toBeNull();
+  });
+
+  test("rejects laptop candidates with different screen sizes", () => {
+    const decision = candidateCompatibility(
+      view({
+        category: "computadoras",
+        brand: "Apple",
+        modelNumber: null,
+        canonicalName: 'MacBook Neo 13" Pulgadas Apple 256GB Chip A18 Pro',
+        specs: { storage: "256gb" },
+      }),
+      view({
+        id: "b",
+        category: "computadoras",
+        brand: "Apple",
+        modelNumber: null,
+        canonicalName: 'MacBook Neo 15" Pulgadas Apple 256GB Chip A18 Pro',
+        specs: { storage: "256gb" },
+        storeSlugs: ["titan"],
+      })
+    );
+    expect(decision.reason).toBe("size-mismatch");
+  });
+});
+
+describe("Candidate series token extraction", () => {
+  test("keeps real model tokens (S25, U8000F, 15-FC0287LA)", () => {
+    expect(candidateSeriesTokens("Samsung Galaxy S25 256GB")).toContain("S25");
+    expect(candidateSeriesTokens('Televisor Samsung 55" U8000F')).toContain("U8000F");
+    expect(candidateSeriesTokens("Laptop HP 15-FC0287LA 512GB")).toContain("15-FC0287LA");
+  });
+
+  test("ignores specs, sizes and IP ratings", () => {
+    const tokens = candidateSeriesTokens("Bocina JBL 4K 55 IP67 AX1800 2.4GHZ");
+    expect(tokens).not.toContain("4K");
+    expect(tokens).not.toContain("55");
+    expect(tokens).not.toContain("IP67");
+    expect(tokens).not.toContain("AX1800");
+    expect(tokens).not.toContain("2.4GHZ");
+  });
+});

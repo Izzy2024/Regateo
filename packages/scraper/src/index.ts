@@ -11,6 +11,15 @@ export { runScrapePipeline } from "./pipeline";
 
 export { ensureStoresSeeded, ingestScrapedItems } from "./ingest";
 
+export { refreshProductAggregates } from "./refresh-stats";
+export {
+  candidateCompatibility,
+  candidateSeriesTokens,
+  CANDIDATE_CATEGORIES,
+  type CandidateView,
+  type CandidateDecision,
+} from "./candidates";
+
 export {
   evaluateAndDispatchPriceAlerts,
   type AlertDispatchResult,

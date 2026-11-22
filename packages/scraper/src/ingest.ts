@@ -12,6 +12,7 @@ import {
 } from "@regateo/db";
 import { PANAMA_STORES, slugify } from "@regateo/shared";
 import { deriveIdentity, type ParsedIdentity } from "./matching";
+import { refreshProductAggregates } from "./refresh-stats";
 import type { ScrapeEngine, RawScrapedItem, IngestResult } from "./types";
 
 /**
@@ -272,6 +273,7 @@ export async function ingestScrapedItems(
     originalPriceCents: entry.item.originalPriceCents ?? null,
     currency: entry.item.currency,
     inStock: entry.item.inStock,
+    color: typeof entry.identity.specs.color === "string" ? entry.identity.specs.color : null,
     url: entry.item.url,
     imageUrl: entry.item.imageUrl ?? null,
     lastCheckedAt: now,
@@ -441,6 +443,7 @@ export async function ingestScrapedItems(
             originalPriceCents: sql`excluded.original_price_cents`,
             currency: sql`excluded.currency`,
             inStock: sql`excluded.in_stock`,
+            color: sql`coalesce(excluded.color, ${storeListings.color})`,
             url: sql`excluded.url`,
             imageUrl: sql`excluded.image_url`,
             lastCheckedAt: sql`excluded.last_checked_at`,
@@ -492,6 +495,7 @@ export async function ingestScrapedItems(
                 originalPriceCents: sql`excluded.original_price_cents`,
                 currency: sql`excluded.currency`,
                 inStock: sql`excluded.in_stock`,
+                color: sql`coalesce(excluded.color, ${storeListings.color})`,
                 url: sql`excluded.url`,
                 imageUrl: sql`excluded.image_url`,
                 lastCheckedAt: sql`excluded.last_checked_at`,
@@ -639,6 +643,15 @@ export async function ingestScrapedItems(
         `  🚫 ${storeSlug}: ${stale.length} listings retirados/agotados marcados fuera de stock`
       );
     }
+  }
+
+  // ---- Materializar agregados (best/highest/savings/store counts) --------
+  try {
+    await refreshProductAggregates();
+  } catch (error) {
+    console.warn(
+      `  ⚠️  ${storeSlug}: no se pudieron materializar los agregados: ${(error as Error).message}`
+    );
   }
 
   await db

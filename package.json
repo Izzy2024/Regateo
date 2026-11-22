@@ -13,6 +13,8 @@
     "dev:web": "bun --filter @regateo/web dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
+    "lint": "biome lint apps packages scripts",
+    "format": "biome format --write apps packages scripts",
     "db:push": "bun --filter @regateo/db db:push",
     "db:generate": "bun --filter @regateo/db db:generate",
     "db:studio": "bun --filter @regateo/db db:studio",
@@ -22,6 +24,7 @@
     "scrape:schedule": "bun --filter @regateo/scraper schedule"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.0.6",
     "@types/bun": "^1.2.15",
     "turbo": "^2.5.4",
     "typescript": "^5.8.3"

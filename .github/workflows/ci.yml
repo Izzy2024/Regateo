@@ -34,6 +34,9 @@ jobs:
       - name: Typecheck (monorepo)
         run: bun run typecheck
 
+      - name: Lint (Biome, non-blocking)
+        run: bun x biome check --diagnostic-level=error || true
+
       - name: Tests (matcher suite)
         run: bun test
 

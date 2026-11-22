@@ -1,16 +1,18 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowLeft,
   ArrowRight,
   Bell,
   CheckCircle2,
   ClipboardList,
   Heart,
+  KeyRound,
   Loader2,
   LogOut,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import {
@@ -19,7 +21,11 @@ import {
   useUserSpace,
 } from "@/hooks/useUserSpace";
 import {
+  API_BASE_URL,
   type CaptchaHeaders,
+  fetchAuthProviders,
+  requestPasswordReset,
+  resetPasswordWithToken,
   signInWithEmail,
   signUpWithEmail,
 } from "@/lib/api";
@@ -42,6 +48,24 @@ const signUpSchema = signInSchema.extend({
 type SignInForm = z.infer<typeof signInSchema>;
 type SignUpForm = z.infer<typeof signUpSchema>;
 
+function readResetToken(): string | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("resetToken") ?? params.get("token") ?? null;
+}
+
+function clearResetTokenFromUrl() {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("resetToken");
+  url.searchParams.delete("token");
+  window.history.replaceState(
+    {},
+    "",
+    `${url.pathname}${url.search}${url.hash}`
+  );
+}
+
 export function AuthModal() {
   const authOpen = useFilterStore((s) => s.authOpen);
   const authMode = useFilterStore((s) => s.authMode);
@@ -58,6 +82,11 @@ export function AuthModal() {
   const [captcha, setCaptcha] = useState<CaptchaHeaders | null>(null);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [flow, setFlow] = useState<"auth" | "forgot" | "reset">("auth");
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [resetDone, setResetDone] = useState(false);
 
   useEffect(() => {
     if (authOpen) {
@@ -66,6 +95,10 @@ export function AuthModal() {
       setCaptcha(null);
       setPrivacyAccepted(false);
       setCaptchaResetKey((k) => k + 1);
+      setForgotSent(false);
+      setResetDone(false);
+      setNewPassword("");
+      setFlow(readResetToken() ? "reset" : "auth");
     }
   }, [authOpen, authMode]);
 
@@ -120,6 +153,67 @@ export function AuthModal() {
     },
   });
 
+  const resetToken = useMemo(
+    () => (authOpen ? readResetToken() : null),
+    [authOpen]
+  );
+
+  const providersQuery = useQuery({
+    queryKey: ["auth-providers"],
+    queryFn: fetchAuthProviders,
+    staleTime: 300_000,
+    retry: false,
+  });
+
+  const forgotMutation = useMutation({
+    mutationFn: (vars: { email: string; captcha: CaptchaHeaders }) =>
+      requestPasswordReset(vars.email, vars.captcha),
+    onSuccess: () => {
+      setAuthError(null);
+      setForgotSent(true);
+      setCaptcha(null);
+      setCaptchaResetKey((k) => k + 1);
+    },
+    onError: (err) => {
+      setCaptcha(null);
+      setCaptchaResetKey((k) => k + 1);
+      setAuthError(
+        err instanceof Error
+          ? err.message
+          : "No pudimos enviar el enlace de recuperación."
+      );
+    },
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: (password: string) =>
+      resetPasswordWithToken(resetToken ?? "", password),
+    onSuccess: () => {
+      setAuthError(null);
+      setResetDone(true);
+      clearResetTokenFromUrl();
+    },
+    onError: (err) => {
+      setAuthError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo actualizar la contraseña."
+      );
+    },
+  });
+
+  const handleBackToAuth = () => {
+    setFlow("auth");
+    setAuthError(null);
+    setCaptcha(null);
+    setForgotSent(false);
+    setCaptchaResetKey((k) => k + 1);
+  };
+
+  const googleSignInUrl = `${API_BASE_URL}/api/auth/sign-in/social?provider=google&callbackURL=${encodeURIComponent(
+    typeof window !== "undefined" ? window.location.origin : ""
+  )}`;
+
   const handleOpenPrivacy = () => {
     setAuthOpen(false);
     setActiveView("privacidad");
@@ -144,6 +238,10 @@ export function AuthModal() {
       title={
         user
           ? "Mi cuenta en RegateoApp"
+          : flow === "forgot"
+          ? "Recupera tu contraseña"
+          : flow === "reset"
+          ? "Crea tu nueva contraseña"
           : mode === "signin"
           ? "Inicia sesión"
           : "Crea tu cuenta gratis"
@@ -151,6 +249,10 @@ export function AuthModal() {
       description={
         user
           ? "Gestiona tus favoritos, listas de presupuesto y alertas de precio."
+          : flow === "forgot"
+          ? "Te enviaremos un enlace seguro a tu correo para crear una nueva contraseña."
+          : flow === "reset"
+          ? "Define tu nueva contraseña y vuelve a entrar a tu cuenta."
           : "Guarda favoritos con radar de bajadas, presupuestos y alertas en Panamá."
       }
     >
@@ -252,6 +354,178 @@ export function AuthModal() {
                 <p className="leading-relaxed font-medium">{authHint}</p>
               </div>
             ) : null}
+            {flow === "forgot" ? (
+              <div>
+                <button
+                  type="button"
+                  onClick={handleBackToAuth}
+                  className="mb-4 inline-flex items-center gap-1 text-xs font-semibold text-[#525866] hover:text-[#111315] cursor-pointer"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Volver a iniciar sesión
+                </button>
+
+                {forgotSent ? (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-[#A7F3D0] bg-[#ECFDF5] p-4 text-xs text-[#047857]">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p className="leading-relaxed font-medium">
+                      Te enviamos un enlace a <strong>{forgotEmail}</strong> para
+                      crear una nueva contraseña. Revisa tu bandeja (y spam) en los
+                      próximos minutos.
+                    </p>
+                  </div>
+                ) : (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!captcha) {
+                        setAuthError(
+                          "Completa la verificación anti-bot para enviar el enlace."
+                        );
+                        return;
+                      }
+                      forgotMutation.mutate({ email: forgotEmail, captcha });
+                    }}
+                    className="space-y-3.5"
+                    noValidate
+                  >
+                    <div>
+                      <label
+                        htmlFor="forgot-email"
+                        className="mb-1 block text-xs font-semibold text-[#111315]"
+                      >
+                        Correo electrónico
+                      </label>
+                      <Input
+                        id="forgot-email"
+                        type="email"
+                        placeholder="nombre@correo.com"
+                        value={forgotEmail}
+                        onChange={(e) => setForgotEmail(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <CaptchaWidget
+                      onChange={setCaptcha}
+                      resetKey={captchaResetKey}
+                    />
+
+                    {authError ? (
+                      <p className="rounded-lg bg-[#FEF2F2] px-3 py-2 text-xs font-medium text-[#B91C1C]">
+                        {authError}
+                      </p>
+                    ) : null}
+
+                    <Button
+                      type="submit"
+                      variant="brand"
+                      size="md"
+                      className="w-full"
+                      disabled={
+                        forgotMutation.isPending ||
+                        !forgotEmail.trim() ||
+                        !captcha
+                      }
+                    >
+                      {forgotMutation.isPending ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Enviando...
+                        </>
+                      ) : (
+                        "Enviar enlace de recuperación"
+                      )}
+                    </Button>
+                  </form>
+                )}
+              </div>
+            ) : flow === "reset" ? (
+              <div>
+                {resetDone ? (
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-2.5 rounded-xl border border-[#A7F3D0] bg-[#ECFDF5] p-4 text-xs text-[#047857]">
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                      <p className="leading-relaxed font-medium">
+                        ¡Contraseña actualizada! Ya puedes iniciar sesión con tu
+                        nueva contraseña.
+                      </p>
+                    </div>
+                    <Button
+                      variant="brand"
+                      size="md"
+                      className="w-full"
+                      onClick={() => {
+                        setFlow("auth");
+                        setMode("signin");
+                        setResetDone(false);
+                      }}
+                    >
+                      Iniciar sesión
+                    </Button>
+                  </div>
+                ) : (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (newPassword.length < 6) {
+                        setAuthError(
+                          "La nueva contraseña debe tener al menos 6 caracteres."
+                        );
+                        return;
+                      }
+                      resetMutation.mutate(newPassword);
+                    }}
+                    className="space-y-3.5"
+                    noValidate
+                  >
+                    <div>
+                      <label
+                        htmlFor="reset-new-password"
+                        className="mb-1 block text-xs font-semibold text-[#111315]"
+                      >
+                        Nueva contraseña
+                      </label>
+                      <Input
+                        id="reset-new-password"
+                        type="password"
+                        placeholder="Mínimo 6 caracteres"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    {authError ? (
+                      <p className="rounded-lg bg-[#FEF2F2] px-3 py-2 text-xs font-medium text-[#B91C1C]">
+                        {authError}
+                      </p>
+                    ) : null}
+
+                    <Button
+                      type="submit"
+                      variant="brand"
+                      size="md"
+                      className="w-full"
+                      disabled={resetMutation.isPending || newPassword.length < 6}
+                    >
+                      {resetMutation.isPending ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Guardando...
+                        </>
+                      ) : (
+                        <>
+                          <KeyRound className="h-4 w-4" />
+                          Guardar nueva contraseña
+                        </>
+                      )}
+                    </Button>
+                  </form>
+                )}
+              </div>
+            ) : (
+              <>
 
             {/* Mode toggle */}
             <div className="mb-5 grid grid-cols-2 gap-1 rounded-xl border border-[#E7E5DF] bg-[#FAFAF7] p-1">
@@ -343,6 +617,20 @@ export function AuthModal() {
                       {signInForm.formState.errors.password.message}
                     </p>
                   ) : null}
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFlow("forgot");
+                      setAuthError(null);
+                      setCaptcha(null);
+                      setCaptchaResetKey((k) => k + 1);
+                    }}
+                    className="text-xs font-semibold text-[#E64825] hover:text-[#B83416] cursor-pointer"
+                  >
+                    ¿Olvidaste tu contraseña?
+                  </button>
                 </div>
 
                 <CaptchaWidget
@@ -509,6 +797,41 @@ export function AuthModal() {
                   )}
                 </Button>
               </form>
+            )}
+            {providersQuery.data?.google ? (
+              <>
+                <div className="my-4 flex items-center gap-3 text-[11px] font-medium text-[#666D7C]">
+                  <span className="h-px flex-1 bg-[#E7E5DF]" />
+                  o
+                  <span className="h-px flex-1 bg-[#E7E5DF]" />
+                </div>
+                <a
+                  href={googleSignInUrl}
+                  className="inline-flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-[#E7E5DF] bg-white text-sm font-semibold text-[#111315] transition-colors hover:bg-[#F4F3EE]"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.76h3.57c2.08-1.92 3.27-4.74 3.27-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.76c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.11a6.6 6.6 0 0 1 0-4.22V7.05H2.18a11 11 0 0 0 0 9.9l3.66-2.84z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 4.75c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 1.94 14.97 1 12 1 8.02 1 4.53 3.47 2.18 7.05l3.66 2.84C6.71 7.31 9.14 4.75 12 4.75z"
+                    />
+                  </svg>
+                  Continuar con Google
+                </a>
+              </>
+            ) : null}
+              </>
             )}
           </div>
         )}

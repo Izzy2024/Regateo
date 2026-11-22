@@ -107,6 +107,7 @@ export function App() {
   const setAiOpen = useFilterStore((s) => s.setAiOpen);
   const setActiveView = useFilterStore((s) => s.setActiveView);
   const syncFromLocation = useFilterStore((s) => s.syncFromLocation);
+  const setAuthOpen = useFilterStore((s) => s.setAuthOpen);
 
   const navigateFromFooter = (view: AppView) => {
     setActiveView(view);
@@ -119,6 +120,14 @@ export function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [syncFromLocation]);
+
+  // Abre automáticamente el restablecimiento de contraseña si la URL trae ?resetToken/?token
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("resetToken") || params.get("token")) {
+      setAuthOpen(true, { mode: "signin" });
+    }
+  }, [setAuthOpen]);
 
   const queryParams = {
     q: q.trim() || undefined,

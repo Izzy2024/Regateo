@@ -144,6 +144,25 @@ con llave familia antigua, ratio > 2.2, duplicados de la misma tienda, modelo au
 metadata (`canonical_name`, marca, modelo, categoría, specs) de cada producto aislado a
 partir del título real del listing.
 
+## Candidatos multi-tienda (`src/candidates.ts`)
+
+`bun --filter @regateo/scraper candidates` usa `pg_trgm.similarity()` (con fallback si
+la extensión no está disponible) para proponer pares de productos de **tiendas
+distintas** en `celulares`, `televisores` y `computadoras` que aún no empataron.
+
+Solo auto-fusiona con precisión estricta:
+
+- misma marca y categoría, ambos **no accesorios**, tiendas disjuntas;
+- mismo `model_number` (o serie compartida si falta el modelo / GTIN idéntico);
+- mismo almacenamiento, tamaño de pantalla (TV y laptops), panel y tier de
+  iPhone/Galaxy (FE, Plus, Ultra, Pro Max…);
+- ratio de precio **≤ 1.65** y similitud de título **≥ 0.35**.
+
+Imprime pares pre-filtrados, fusiones aplicadas, motivos de rechazo y el salto de
+cobertura por categoría; termina refrescando los agregados. Los embeddings con
+`OPENAI_API_KEY`/`OPENROUTER_API_KEY` quedan como siguiente capa (la tabla ya tiene
+`embedding_text`).
+
 ## Scripts internos (operación)
 
 Se ejecutan **desde la raíz del repositorio** y nunca se exponen a visitantes públicos:
@@ -156,7 +175,9 @@ el scraping solo se dispara desde terminal, VPS, Render Cron o GitHub Actions.
 | `bun run scrape:schedule` | `packages/scraper/src/scheduler.ts` | Daemon de automatización cada `SCRAPE_INTERVAL_DAYS` días (1..7, default **3**) a las **03:00 hora de Panamá** (08:00 UTC). Imprime la próxima corrida y soporta `--once` y `--run-now`. |
 | `bun run scrape` | `packages/scraper/src/cli.ts` | CLI del paquete para corridas puntuales: `--stores=`, `--max=`, `--full`, `--no-firecrawl`, `--no-enrich`, `--json`. |
 | `alerts:check` | `packages/scraper/src/alerts.ts` | Evalúa y despacha alertas sin re-scrapear (`bun --filter @regateo/scraper alerts:check`). |
-| `test` | `src/matching.test.ts` | Suite del matcher con `bun test` (familias, iPhone/Galaxy, GTIN, negativos estrictos, colores). |
+| `candidates` | `packages/scraper/src/candidates.ts` | Descubre y fusiona candidatos multi-tienda de alta precisión (`pg_trgm`) y reporta cobertura. |
+| `stats:refresh` | `packages/scraper/src/refresh-stats.ts` | Rematerializa `best_price_cents`, savings, store counts y descuentos. |
+| `test` | `src/matching.test.ts` | Suite del matcher con `bun test` (117 tests: familias, iPhone/Galaxy, GTIN, candidatos, colores). |
 
 Flags de `scrape:radar` / `scrape:full`:
 
@@ -191,8 +212,10 @@ bun --filter @regateo/scraper typecheck
 Mantenimiento puntual de datos (desde `packages/scraper`):
 
 ```bash
-bun src/cleanup.ts                          # re-agrupa listings con el matcher actual + reporte antes/después
-bun test                                    # suite del matcher (87 tests)
+bun src/cleanup.ts                          # re-agrupa listings + color + agregados + reporte antes/después
+bun src/candidates.ts                       # fusiona candidatos multi-tienda de alta precisión
+bun src/refresh-stats.ts                    # rematerializa agregados de precio
+bun test                                    # suite del matcher/candidatos (117 tests)
 bun src/alerts.ts                           # evalúa y despacha alertas de precio
 ```
 
@@ -201,7 +224,8 @@ Workflows:
 - `.github/workflows/scheduled-scrape.yml`: barrido **diario** (`cron 0 8 * * *`,
   03:00 Panamá) con `max_per_store: 5000` y despacho de alertas al final.
 - `.github/workflows/ci.yml`: en `push`/`pull_request` a `main` ejecuta
-  `bun install --frozen-lockfile`, `bun run typecheck`, `bun test` y `bun run build`.
+  `bun install --frozen-lockfile`, `bun run typecheck`, **Biome**
+  (`bun x biome check --diagnostic-level=error || true`), `bun test` y `bun run build`.
 
 ## Variables de entorno
 
@@ -225,6 +249,27 @@ Workflows:
 actualiza `stores.last_scraped_at`. **No se inventan históricos ni productos**: cada
 punto de `price_history` corresponde a una observación real; se inserta cuando el precio
 **o el stock** cambia, o cuando pasaron ≥12 h desde el último snapshot idéntico.
+
+### Agregados materializados (`src/refresh-stats.ts`)
+
+`refreshProductAggregates(productIds?)` ejecuta **una sola sentencia** `UPDATE products
+... FROM (SELECT ... GROUP BY product_id)` y deja listos para consulta O(1):
+
+| Columna | Cálculo |
+| --- | --- |
+| `best_price_cents` | `coalesce(min(price) filter in_stock, min(price))` |
+| `highest_price_cents` | `coalesce(max(price) filter in_stock, max(price))` |
+| `store_count` / `in_stock_count` | tiendas distintas / listings en stock |
+| `savings_cents` | con 2+ tiendas en stock: `max_in_stock - min_in_stock` (nunca negativo) |
+| `savings_percent` | `round(100 * savings / max_in_stock, 2)`, acotado a ≤99 |
+| `store_discount_*` | descuento del listing ganador sobre su `original_price_cents` (0 si >65%) |
+
+Se llama automáticamente al final de `ingestScrapedItems()`, de `cleanup.ts` y de
+`candidates.ts`. También se puede forzar con `bun --filter @regateo/scraper
+stats:refresh`. Los productos sin listings quedan en 0 (nunca `NULL`).
+
+Además, `store_listings.color` se llena con `extractColor()` en cada ingesta y se
+backfillea en el re-agrupamiento.
 
 Reglas anti corrupción:
 

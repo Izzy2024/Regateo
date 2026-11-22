@@ -113,7 +113,7 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
           )}
         </button>
 
-        <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-1.5">
+        <div className="pointer-events-none absolute bottom-2.5 left-2.5 right-2.5 flex flex-wrap gap-1.5">
           {featured ? (
             <Badge className="border-[#111315] bg-[#111315] text-white">
               #1 Oferta

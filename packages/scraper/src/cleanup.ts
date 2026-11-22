@@ -1,6 +1,7 @@
 import { db, eq, products, stores, storeListings, sql } from "@regateo/db";
 import { slugify } from "@regateo/shared";
 import { deriveIdentity } from "./matching";
+import { refreshProductAggregates } from "./refresh-stats";
 
 /**
  * Re-agrupamiento completo de `regateoapp_dev` con el matcher estricto actual.
@@ -162,6 +163,7 @@ async function main(): Promise<void> {
     .innerJoin(products, eq(products.id, storeListings.productId));
 
   const groups = new Map<string, ListingRow[]>();
+  const colorByListing = new Map<string, string | null>();
   for (const row of rows) {
     // Keep cleanup consistent with ingest for API-provided models, but only
     // when the title really contains that model (guards against stale merges).
@@ -175,6 +177,9 @@ async function main(): Promise<void> {
       vendor: row.brand,
       modelNumber: modelHint,
     });
+    const color =
+      typeof identity.specs.color === "string" ? identity.specs.color : null;
+    colorByListing.set(row.id, color);
     const list = groups.get(identity.matchKey) ?? [];
     list.push(row);
     groups.set(identity.matchKey, list);
@@ -290,11 +295,16 @@ async function main(): Promise<void> {
   }
 
   for (const batch of chunk(pairs, LISTING_BATCH)) {
-    const values = batch.map(([listingId, productId]) => sql`(${listingId}::uuid, ${productId}::uuid)`);
+    const values = batch.map(
+      ([listingId, productId]) =>
+        sql`(${listingId}::uuid, ${productId}::uuid, ${colorByListing.get(listingId) ?? null})`
+    );
     await db.execute(sql`
       UPDATE store_listings AS sl
-      SET product_id = v.product_id, updated_at = now()
-      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(listing_id, product_id)
+      SET product_id = v.product_id,
+          color = COALESCE(v.color, sl.color),
+          updated_at = now()
+      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(listing_id, product_id, color)
       WHERE sl.id = v.listing_id
     `);
   }
@@ -308,6 +318,9 @@ async function main(): Promise<void> {
       AND NOT EXISTS (SELECT 1 FROM price_alerts a WHERE a.product_id = p.id)
   `);
   console.log(`   productos huérfanos eliminados: ${(deleted as unknown as { count?: number }).count ?? "ok"}`);
+
+  const refreshed = await refreshProductAggregates();
+  console.log(`   agregados materializados: ${refreshed} productos`);
 
   // ---- 6. Reporte ANTES vs DESPUÉS ---------------------------------------
   const after = {

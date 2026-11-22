@@ -2,6 +2,16 @@
 
 Todos los cambios relevantes del proyecto se documentan aquí siguiendo [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.4.0] - 2026-11-21
+
+### Fase 2 — Escalabilidad, Auth Completa, Cobertura y UX
+- **Fix visual en `ProductCard.tsx`:** reubicada la banda/badge **"Ahorras $X"** debajo de los controles superiores para eliminar por completo el solapamiento con el botón **"Comparar"** y `♥`.
+- **Columnas materializadas en PostgreSQL (`products`):** `best_price_cents`, `highest_price_cents`, `savings_cents`, `savings_percent`, `store_discount_cents`, `store_discount_percent`, `store_count` e `in_stock_count` indexadas y refrescadas automáticamente vía `refreshProductAggregates()` (+ columna `color` en `store_listings` con **5,195 listings** enriquecidos).
+- **Motor de candidatos multi-tienda (`candidates.ts`) + 117 tests (`bun test`):** sube cobertura de comparación verificada (`611` productos multi-tienda, `429` comparables en stock) con **117/117 tests PASS**.
+- **Auth completa:** recuperación de contraseña (`sendResetPassword` vía Resend + flujo UI `¿Olvidaste tu contraseña?` / `?resetToken=...`) y soporte **Google OAuth** (`GET /api/auth/providers`).
+- **Calculadora "¿Conviene traerlo de Amazon a Panamá?"** (`packages/shared/src/import-calculator.ts` + tarjeta interactiva en `ProductDetailModal.tsx`) + chips de color y especificaciones técnicas.
+- **Refactors modulares y calidad:** `catalog.ts` dividido en `catalog/{shared,search,similar,ai-tools}.ts`, `AccountSpaceView.tsx` dividido en `account/{FavoritesTab,ListsTab,AlertsTab}.tsx`, e incorporación de **Biome** (`bun run lint`) al repo y al CI.
+
 ## [0.3.0] - 2026-11-21
 
 ### Corregido y Agregado (Auditoría Crítica Pre-Black Friday)

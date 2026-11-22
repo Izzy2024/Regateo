@@ -4,6 +4,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -122,6 +123,15 @@ export const products = pgTable(
     category: varchar("category", { length: 48 }).notNull().default("accesorios"),
     imageUrl: text("image_url"),
     specs: jsonb("specs").$type<Record<string, unknown>>(),
+    // Columnas materializadas al final de cada ingesta (consulta O(1) indexada en 100k+ listings)
+    bestPriceCents: integer("best_price_cents"),
+    highestPriceCents: integer("highest_price_cents"),
+    savingsCents: integer("savings_cents").notNull().default(0),
+    savingsPercent: real("savings_percent").notNull().default(0),
+    storeDiscountCents: integer("store_discount_cents").notNull().default(0),
+    storeDiscountPercent: real("store_discount_percent").notNull().default(0),
+    storeCount: integer("store_count").notNull().default(0),
+    inStockCount: integer("in_stock_count").notNull().default(0),
     // pgvector HNSW column is enabled in Neon/Supabase via migrations/pgvector-hnsw.sql
     embeddingText: text("embedding_text"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -133,6 +143,10 @@ export const products = pgTable(
     index("products_category_idx").on(table.category),
     index("products_brand_idx").on(table.brand),
     index("products_model_number_idx").on(table.modelNumber),
+    index("products_best_price_idx").on(table.bestPriceCents),
+    index("products_store_count_idx").on(table.storeCount),
+    index("products_savings_cents_idx").on(table.savingsCents),
+    index("products_in_stock_count_idx").on(table.inStockCount),
     index("products_updated_at_idx").on(table.updatedAt),
   ]
 );
@@ -153,6 +167,7 @@ export const storeListings = pgTable(
     originalPriceCents: integer("original_price_cents"),
     currency: varchar("currency", { length: 8 }).notNull().default("USD"),
     inStock: boolean("in_stock").notNull().default(true),
+    color: varchar("color", { length: 48 }),
     url: text("url").notNull(),
     imageUrl: text("image_url"),
     lastCheckedAt: timestamp("last_checked_at", { withTimezone: true })

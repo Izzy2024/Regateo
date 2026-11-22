@@ -11,6 +11,8 @@
     "schedule": "bun src/scheduler.ts",
     "alerts:check": "bun src/alerts.ts",
     "cleanup": "bun src/cleanup.ts",
+    "candidates": "bun src/candidates.ts",
+    "stats:refresh": "bun src/refresh-stats.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

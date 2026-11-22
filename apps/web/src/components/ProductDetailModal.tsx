@@ -1,4 +1,12 @@
-import type { ReportWrongPriceInput, SimilarProductDTO } from "@regateo/shared";
+import type {
+  ProductCategory,
+  ReportWrongPriceInput,
+  SimilarProductDTO,
+} from "@regateo/shared";
+import {
+  calculateAmazonPanamaImport,
+  DEFAULT_WEIGHT_LBS_BY_CATEGORY,
+} from "@regateo/shared";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -11,6 +19,7 @@ import {
   Heart,
   ListPlus,
   Loader2,
+  Package,
   Plus,
   Scale,
   Sparkles,
@@ -41,6 +50,7 @@ import { PriceHistoryChart } from "./PriceHistoryChart";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
+import { Input } from "./ui/input";
 import { Skeleton } from "./ui/skeleton";
 
 type SimilarFilter = "all" | "cheaper" | "other-stores";
@@ -54,6 +64,240 @@ const REPORT_REASONS: Array<{
   { value: "wrong-match", label: "No es el mismo modelo" },
   { value: "broken-link", label: "Enlace roto" },
 ];
+
+function isHexColor(value: string): boolean {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim());
+}
+
+function getSpecChips(specs: Record<string, unknown> | null): string[] {
+  if (!specs) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (text: string) => {
+    const t = text.trim();
+    if (t && !seen.has(t) && out.length < 6) {
+      seen.add(t);
+      out.push(t);
+    }
+  };
+  for (const [rawKey, rawValue] of Object.entries(specs)) {
+    if (rawValue === null || rawValue === undefined) continue;
+    const value = String(rawValue).trim();
+    if (!value || value.toLowerCase() === "n/a") continue;
+    const haystack = `${rawKey} ${value}`.toLowerCase();
+
+    if (/pulgada|pantalla|screen|display|tamaño/.test(haystack) && /\d/.test(value)) {
+      add(`${value.replace(/["']/g, "")}" pantalla`);
+    } else if (/btu/.test(haystack)) {
+      add(/btu/i.test(value) ? value : `${value} BTU`);
+    } else if (/\bram\b|memoria ram/.test(haystack)) {
+      add(`RAM ${value}`);
+    } else if (/almacenamiento|storage|ssd|disco|capacidad/.test(haystack)) {
+      add(`Almacenamiento ${value}`);
+    } else if (
+      /peso|weight/.test(haystack) ||
+      /^\d+(\.\d+)?\s?(kg|lbs|libras)\b/i.test(value)
+    ) {
+      add(/kg|lbs|libras/i.test(value) ? value : `Peso ${value}`);
+    }
+  }
+  return out;
+}
+
+function AmazonImportCalculator({
+  category,
+  localBestPriceCents,
+}: {
+  category: ProductCategory;
+  localBestPriceCents: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [amazonPrice, setAmazonPrice] = useState(
+    (Math.round(localBestPriceCents) / 100).toFixed(2)
+  );
+  const [weightLbs, setWeightLbs] = useState(
+    String(DEFAULT_WEIGHT_LBS_BY_CATEGORY[category] ?? 5)
+  );
+  const [courierRate, setCourierRate] = useState("3.50");
+
+  const result = useMemo(() => {
+    const price = Number.parseFloat(amazonPrice);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    const weight = Number.parseFloat(weightLbs);
+    const rate = Number.parseFloat(courierRate);
+    return calculateAmazonPanamaImport({
+      amazonPriceUsd: price,
+      localBestPriceCents,
+      weightLbs: Number.isFinite(weight) && weight > 0 ? weight : 1,
+      courierRatePerLbUsd: Number.isFinite(rate) && rate > 0 ? rate : 3.5,
+    });
+  }, [amazonPrice, weightLbs, courierRate, localBestPriceCents]);
+
+  return (
+    <div className="rounded-xl border border-[#E7E5DF] bg-white">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left cursor-pointer"
+      >
+        <span className="flex items-center gap-2.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#FEF2EE] text-[#E64825]">
+            <Package className="h-4 w-4" />
+          </span>
+          <span>
+            <span className="block text-sm font-bold text-[#111315]">
+              ¿Conviene traerlo de Amazon + courier a Panamá?
+            </span>
+            <span className="block text-[11px] text-[#666D7C]">
+              Estimado con flete Miami→Panamá, ITBMS/aduana y manejo
+            </span>
+          </span>
+        </span>
+        <span className="shrink-0 text-xs font-semibold text-[#E64825]">
+          {open ? "Ocultar" : "Calcular"}
+        </span>
+      </button>
+
+      {open ? (
+        <div className="border-t border-[#EFECE5] p-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label
+                htmlFor="amazon-price"
+                className="mb-1 block text-[11px] font-semibold text-[#525866]"
+              >
+                Precio en Amazon (USD)
+              </label>
+              <Input
+                id="amazon-price"
+                type="number"
+                step="0.01"
+                min="0"
+                value={amazonPrice}
+                onChange={(e) => setAmazonPrice(e.target.value)}
+                className="h-8 font-mono text-xs tabular-nums"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="amazon-weight"
+                className="mb-1 block text-[11px] font-semibold text-[#525866]"
+              >
+                Peso (libras)
+              </label>
+              <Input
+                id="amazon-weight"
+                type="number"
+                step="0.5"
+                min="0.5"
+                value={weightLbs}
+                onChange={(e) => setWeightLbs(e.target.value)}
+                className="h-8 font-mono text-xs tabular-nums"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="amazon-courier-rate"
+                className="mb-1 block text-[11px] font-semibold text-[#525866]"
+              >
+                Tarifa courier ($/lb)
+              </label>
+              <Input
+                id="amazon-courier-rate"
+                type="number"
+                step="0.25"
+                min="0.5"
+                value={courierRate}
+                onChange={(e) => setCourierRate(e.target.value)}
+                className="h-8 font-mono text-xs tabular-nums"
+              />
+            </div>
+          </div>
+
+          {result ? (
+            <div className="mt-4 space-y-3">
+              <div className="space-y-1 rounded-lg border border-[#EFECE5] bg-[#FAFAF7] p-3 text-xs text-[#525866]">
+                <div className="flex items-center justify-between">
+                  <span>Precio Amazon</span>
+                  <span className="font-price font-semibold text-[#111315]">
+                    {formatUsd(result.breakdown.itemCents)}
+                  </span>
+                </div>
+                {result.breakdown.usTaxCents > 0 ? (
+                  <div className="flex items-center justify-between">
+                    <span>Impuesto EE.UU.</span>
+                    <span className="font-price font-semibold text-[#111315]">
+                      {formatUsd(result.breakdown.usTaxCents)}
+                    </span>
+                  </div>
+                ) : null}
+                <div className="flex items-center justify-between">
+                  <span>Flete Miami→Panamá</span>
+                  <span className="font-price font-semibold text-[#111315]">
+                    {formatUsd(result.breakdown.shippingCents)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Estimado ITBMS/aduana</span>
+                  <span className="font-price font-semibold text-[#111315]">
+                    {formatUsd(result.breakdown.customsAndItbmsCents)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Manejo del courier</span>
+                  <span className="font-price font-semibold text-[#111315]">
+                    {formatUsd(result.breakdown.handlingCents)}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex items-center justify-between border-t border-[#E7E5DF] pt-1.5 text-[13px] font-bold text-[#111315]">
+                  <span>Total puesto en Panamá</span>
+                  <span className="font-price">
+                    {formatUsd(result.totalLandedCents)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Mejor precio hoy en Panamá</span>
+                  <span className="font-price font-semibold text-[#047857]">
+                    {formatUsd(result.localBestPriceCents)}
+                  </span>
+                </div>
+              </div>
+
+              {result.verdict === "buy-local" ? (
+                <div className="rounded-lg border border-[#A7F3D0] bg-[#ECFDF5] px-3.5 py-3 text-xs font-semibold text-[#047857]">
+                  Conviene comprarlo aquí en Panamá (ahorras{" "}
+                  {formatUsd(result.deltaCents)} + garantía local)
+                </div>
+              ) : result.verdict === "import" ? (
+                <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3.5 py-3 text-xs font-semibold text-[#92400E]">
+                  Importarlo sale ~{formatUsd(Math.abs(result.deltaCents))} menos
+                  (toma en cuenta envío y garantía)
+                </div>
+              ) : (
+                <div className="rounded-lg border border-[#E7E5DF] bg-[#F4F3EE] px-3.5 py-3 text-xs font-semibold text-[#525866]">
+                  Precio muy parecido — aquí lo tienes hoy con garantía
+                </div>
+              )}
+
+              <ul className="space-y-1 text-[11px] leading-relaxed text-[#666D7C]">
+                {result.notes.map((note) => (
+                  <li key={note} className="flex gap-1.5">
+                    <span aria-hidden="true">•</span>
+                    <span>{note}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-[#666D7C]">
+              Ingresa el precio en Amazon para ver el estimado completo.
+            </p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function SimilarProductThumb({
   imageUrl,
@@ -300,6 +544,11 @@ export function ProductDetailModal() {
       )
     : null;
 
+  const specChips = useMemo(
+    () => getSpecChips(product?.specs ?? null),
+    [product?.specs]
+  );
+
   return (
     <Dialog
       open={Boolean(selectedSlug)}
@@ -350,6 +599,18 @@ export function ProductDetailModal() {
           </div>
         ) : (
           <div className="space-y-6">
+            {specChips.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {specChips.map((chip) => (
+                  <span
+                    key={chip}
+                    className="inline-flex items-center rounded-md border border-[#E7E5DF] bg-white px-2 py-0.5 text-[11px] font-semibold text-[#525866]"
+                  >
+                    {chip}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className="grid gap-5 md:grid-cols-[230px_1fr]">
               <div className="flex aspect-square items-center justify-center rounded-xl border border-[#E7E5DF] bg-[#F7F6F2] p-4">
                 {product.imageUrl && !imgFailed ? (
@@ -700,17 +961,30 @@ export function ProductDetailModal() {
                           </td>
 
                           <td className="px-4 py-3">
-                            {listing.inStock ? (
-                              <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#047857]">
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                En stock
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium text-[#666D7C]">
-                                <XCircle className="h-3.5 w-3.5" />
-                                Agotado
-                              </span>
-                            )}
+                            <div className="flex flex-col items-start gap-1">
+                              {listing.inStock ? (
+                                <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#047857]">
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  En stock
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-xs font-medium text-[#666D7C]">
+                                  <XCircle className="h-3.5 w-3.5" />
+                                  Agotado
+                                </span>
+                              )}
+                              {listing.color ? (
+                                <span className="inline-flex items-center gap-1 rounded bg-[#F4F3EE] px-1.5 py-0.5 text-[10px] font-medium text-[#525866]">
+                                  {isHexColor(listing.color) ? (
+                                    <span
+                                      className="h-2 w-2 rounded-full border border-black/10"
+                                      style={{ backgroundColor: listing.color }}
+                                    />
+                                  ) : null}
+                                  {isHexColor(listing.color) ? "Color" : listing.color}
+                                </span>
+                              ) : null}
+                            </div>
                           </td>
 
                           <td className="px-4 py-3 text-xs text-[#525866]">
@@ -794,6 +1068,11 @@ export function ProductDetailModal() {
                 </table>
               </div>
             </div>
+
+            <AmazonImportCalculator
+              category={product.category}
+              localBestPriceCents={product.bestPriceCents}
+            />
 
             {/* Star feature: Similar products across other Panama stores */}
             <section className="rounded-xl border border-[#E7E5DF] bg-[#FAFAF7] p-4 sm:p-5">

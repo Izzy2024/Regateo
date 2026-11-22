@@ -267,8 +267,17 @@ const routes = app
 
   // ------------------------------------------------------------- auth
   // Endpoints de credenciales protegidos contra bots (rate limit + captcha).
-  // El resto de /api/auth/* (get-session, sign-out, forgot-password, etc.)
-  // sigue abierto a través del catch-all de abajo.
+  // El resto de /api/auth/* (get-session, sign-out, etc.) sigue abierto a
+  // través del catch-all de abajo.
+  .get("/api/auth/providers", (c) =>
+    c.json({
+      emailPassword: true,
+      passwordReset: true,
+      google: Boolean(
+        process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      ),
+    })
+  )
   .post(
     "/api/auth/sign-up/email",
     rateLimitMiddleware({ limit: 12, windowSec: 60, bucket: "auth-write" }),
@@ -278,6 +287,21 @@ const routes = app
   .post(
     "/api/auth/sign-in/email",
     rateLimitMiddleware({ limit: 12, windowSec: 60, bucket: "auth-write" }),
+    requireCaptchaMiddleware,
+    (c) => authHandler(c.req.raw)
+  )
+  // Restablecimiento de contraseña: rate limit estricto (6/min) + captcha.
+  // Cubre ambos nombres de endpoint (request-password-reset y el alias
+  // forget-password según la versión de Better Auth).
+  .post(
+    "/api/auth/request-password-reset",
+    rateLimitMiddleware({ limit: 6, windowSec: 60, bucket: "auth-reset" }),
+    requireCaptchaMiddleware,
+    (c) => authHandler(c.req.raw)
+  )
+  .post(
+    "/api/auth/forget-password",
+    rateLimitMiddleware({ limit: 6, windowSec: 60, bucket: "auth-reset" }),
     requireCaptchaMiddleware,
     (c) => authHandler(c.req.raw)
   )

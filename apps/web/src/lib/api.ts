@@ -365,6 +365,37 @@ export async function signOutAuth(): Promise<void> {
   });
 }
 
+export interface AuthProvidersResponse {
+  emailPassword: boolean;
+  passwordReset: boolean;
+  google: boolean;
+}
+
+export function fetchAuthProviders(): Promise<AuthProvidersResponse> {
+  return apiFetch<AuthProvidersResponse>("/api/auth/providers");
+}
+
+export function requestPasswordReset(
+  email: string,
+  captcha?: CaptchaHeaders
+): Promise<{ ok?: boolean }> {
+  return apiFetch<{ ok?: boolean }>("/api/auth/request-password-reset", {
+    method: "POST",
+    headers: buildCaptchaHeaders(captcha),
+    body: JSON.stringify({ email, redirectTo: window.location.origin }),
+  });
+}
+
+export function resetPasswordWithToken(
+  token: string,
+  newPassword: string
+): Promise<{ ok?: boolean }> {
+  return apiFetch<{ ok?: boolean }>("/api/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, newPassword }),
+  });
+}
+
 // ============================================================================
 // Mi Espacio (Authenticated User API)
 // ============================================================================
