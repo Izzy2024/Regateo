@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-canvas: #FAFAF7;
+  --color-surface: #FFFFFF;
+  --color-surface-subtle: #F4F3EE;
+  --color-border-crisp: #E7E5DF;
+  --color-border-strong: #D5D2C9;
+
+  --color-ink: #111315;
+  --color-ink-secondary: #525866;
+  --color-ink-muted: #666D7C;
+
+  --color-brand: #E64825;
+  --color-brand-hover: #CF3C1C;
+  --color-brand-soft: #FEF2EE;
+  --color-brand-ink: #B83416;
+
+  --color-best: #059669;
+  --color-best-deep: #047857;
+  --color-best-soft: #ECFDF5;
+  --color-best-border: #A7F3D0;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+    scrollbar-color: #D5D2C9 #FAFAF7;
+    scrollbar-width: thin;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    caret-color: var(--color-brand);
+  }
+
+  ::selection {
+    background-color: #FDE5DC;
+    color: #9A2910;
+  }
+
+  a {
+    text-underline-offset: 3px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #FAFAF7;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #D5D2C9;
+    border-radius: 9999px;
+    border: 2px solid #FAFAF7;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #B8B4A9;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-price {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.card-elevation {
+  box-shadow:
+    0 1px 2px rgba(17, 19, 21, 0.03),
+    0 4px 12px rgba(17, 19, 21, 0.03);
+}
+
+.card-elevation-hover {
+  box-shadow:
+    0 2px 4px rgba(17, 19, 21, 0.05),
+    0 10px 24px rgba(17, 19, 21, 0.06);
+}
+
+.modal-elevation {
+  box-shadow:
+    0 12px 32px rgba(17, 19, 21, 0.12),
+    0 2px 8px rgba(17, 19, 21, 0.06);
+}
+
+/* Lightweight GPU-composited animations for Magic UI primitives */
+@keyframes regateo-marquee {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(calc(-100% - var(--gap, 0.75rem)), 0, 0);
+  }
+}
+
+@keyframes regateo-beam-spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+@keyframes regateo-shimmer-sweep {
+  0% {
+    transform: translate3d(-140%, 0, 0) skewX(-20deg);
+  }
+  38%,
+  100% {
+    transform: translate3d(260%, 0, 0) skewX(-20deg);
+  }
+}
+
+.animate-regateo-marquee {
+  animation: regateo-marquee var(--duration, 34s) linear infinite;
+  will-change: transform;
+}
+
+.animate-regateo-marquee-reverse {
+  animation-direction: reverse;
+}
+
+.animate-regateo-beam {
+  animation: regateo-beam-spin var(--beam-duration, 7s) linear infinite;
+  will-change: transform;
+}
+
+.animate-regateo-shimmer {
+  animation: regateo-shimmer-sweep var(--shimmer-duration, 3.6s) ease-in-out infinite;
+  will-change: transform;
+}
+
+.border-beam-mask {
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+}
+
+.marquee-edge-mask {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 5%,
+    #000 95%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 5%,
+    #000 95%,
+    transparent 100%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-regateo-marquee,
+  .animate-regateo-beam,
+  .animate-regateo-shimmer {
+    animation: none !important;
+  }
+}

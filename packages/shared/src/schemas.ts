@@ -129,36 +129,74 @@ export const PANAMA_STORES: PanamaStoreConfig[] = [
     description: "Electrodomésticos, electrónica, accesorios y hogar.",
   },
   {
-    slug: "fotosonido",
-    name: "Foto Sonido PTY",
-    baseUrl: "https://www.fotosonidopty.com",
-    platform: "firecrawl-html",
-    color: "#7C3AED",
-    accentBg: "#F5F3FF",
-    country: "PA",
-    currency: "USD",
-    enabled: true,
-    scrapePaths: [
-      "/categoria-producto/televisores/",
-      "/categoria-producto/linea-blanca/",
-      "/categoria-producto/audio/",
-      "/categoria-producto/computadoras/",
-      "/",
-    ],
-    description: "Televisores, línea blanca, aires acondicionados y audio.",
-  },
-  {
-    slug: "audiofoto",
-    name: "Audiofoto",
-    baseUrl: "https://audiofotopro.com",
-    platform: "firecrawl-html",
-    color: "#0369A1",
+    slug: "photura",
+    name: "Photura",
+    baseUrl: "https://www.photura.com",
+    platform: "shopify",
+    color: "#0284C7",
     accentBg: "#F0F9FF",
     country: "PA",
     currency: "USD",
     enabled: true,
-    scrapePaths: ["/", "/productos/"],
-    description: "Audio profesional, video, fotografía y electrónica.",
+    scrapePaths: [
+      "/collections/televisores/products.json",
+      "/collections/computacion/products.json",
+      "/collections/celulares-tablets/products.json",
+      "/collections/audio/products.json",
+      "/collections/refrigeradoras/products.json",
+      "/collections/aires-acondicionados/products.json",
+      "/collections/teclados-mouse/products.json",
+      "/products.json",
+    ],
+    description: "Televisores, computación, audio, fotografía, aires y línea blanca en Panamá.",
+  },
+  {
+    slug: "doitcenter",
+    name: "Do it Center",
+    baseUrl: "https://www.doitcenter.com.pa",
+    platform: "firecrawl-html",
+    color: "#DC2626",
+    accentBg: "#FEF2F2",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: [
+      "/categorias/electrodomesticos",
+      "/categorias/tecnologia",
+      "/categorias/linea-blanca",
+      "/categorias/aires-acondicionados",
+    ],
+    description: "Electrodomésticos, línea blanca, aires acondicionados y tecnología en Panamá.",
+  },
+  {
+    slug: "yoytec",
+    name: "Yoytec",
+    baseUrl: "https://www.yoytec.com",
+    platform: "firecrawl-html",
+    color: "#2563EB",
+    accentBg: "#EFF6FF",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: [
+      "/shop",
+      "/shop/page/2",
+      "/shop/page/3",
+    ],
+    description: "Computadoras, componentes PC, periféricos gamer, mouse, monitores y redes en Panamá.",
+  },
+  {
+    slug: "ptytec",
+    name: "PTYTEC",
+    baseUrl: "https://www.ptytec.com",
+    platform: "firecrawl-html",
+    color: "#0D9488",
+    accentBg: "#F0FDFA",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: ["/"],
+    description: "Laptops, PCs gamer, mouse, teclados, monitores y tecnología en Panamá.",
   },
 ];
 
@@ -204,7 +242,7 @@ export type CreatePriceAlertInput = z.infer<typeof createPriceAlertSchema>;
 
 export const triggerScrapeSchema = z.object({
   stores: z.array(z.string().min(1)).optional(),
-  maxPerStore: z.number().int().min(1).max(200).default(40),
+  maxPerStore: z.number().int().min(1).max(20000).default(5000),
   useFirecrawl: z.boolean().default(true),
 });
 
@@ -295,9 +333,34 @@ export interface PriceHistoryPointDTO {
   priceCents: number;
 }
 
+export interface SimilarProductDTO {
+  id: string;
+  slug: string;
+  canonicalName: string;
+  brand: string | null;
+  modelNumber: string | null;
+  category: ProductCategory;
+  imageUrl: string | null;
+  bestPriceCents: number;
+  priceDiffCents: number;
+  priceDiffPercent: number;
+  similarityScore: number;
+  matchReasons: string[];
+  storeCount: number;
+  bestStore: {
+    slug: string;
+    name: string;
+    color: string;
+    accentBg: string;
+    url: string;
+    inStock: boolean;
+  };
+}
+
 export interface ProductDetailDTO extends ProductSummaryDTO {
   specs: Record<string, unknown> | null;
   priceHistory: PriceHistoryPointDTO[];
+  similarProducts?: SimilarProductDTO[];
 }
 
 export interface StoreStatusDTO {
@@ -313,4 +376,113 @@ export interface StoreStatusDTO {
   lastScrapedAt: string | null;
   lastRunStatus: string | null;
   lastRunItems: number;
+}
+
+// ============================================================================
+// Mi Espacio (Usuario Logueado): Favoritos, Alertas y Listas/Presupuestos
+// ============================================================================
+
+export const createFavoriteSchema = z.object({
+  productId: z.string().uuid(),
+  note: z.string().trim().max(240).optional(),
+});
+
+export type CreateFavoriteInput = z.infer<typeof createFavoriteSchema>;
+
+export const syncFavoritesSchema = z.object({
+  productIds: z.array(z.string().uuid()).max(100),
+});
+
+export type SyncFavoritesInput = z.infer<typeof syncFavoritesSchema>;
+
+export const createShoppingListSchema = z.object({
+  name: z.string().trim().min(2, "Ingresa un nombre de al menos 2 caracteres").max(80),
+  description: z.string().trim().max(240).optional(),
+});
+
+export type CreateShoppingListInput = z.infer<typeof createShoppingListSchema>;
+
+export const addListItemSchema = z.object({
+  productId: z.string().uuid(),
+  quantity: z.number().int().min(1).max(20).default(1),
+});
+
+export type AddListItemInput = z.infer<typeof addListItemSchema>;
+
+export const updateAlertSchema = z.object({
+  targetPriceCents: z.number().int().positive().optional(),
+  active: z.boolean().optional(),
+});
+
+export type UpdateAlertInput = z.infer<typeof updateAlertSchema>;
+
+export interface FavoriteProductDTO {
+  id: string;
+  productId: string;
+  savedPriceCents: number;
+  currentBestPriceCents: number;
+  priceChangeSinceSavedCents: number; // < 0 significa que bajó de precio desde que lo guardaste
+  note: string | null;
+  createdAt: string;
+  product: ProductSummaryDTO;
+}
+
+export interface ShoppingListItemDTO {
+  id: string;
+  productId: string;
+  quantity: number;
+  createdAt: string;
+  product: ProductSummaryDTO;
+}
+
+export interface ShoppingListDTO {
+  id: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+  itemCount: number;
+  totalBestPriceCents: number;
+  totalHighestPriceCents: number;
+  totalSavingsCents: number;
+  items: ShoppingListItemDTO[];
+}
+
+export interface UserAlertDTO {
+  id: string;
+  productId: string;
+  email: string;
+  targetPriceCents: number;
+  active: boolean;
+  createdAt: string;
+  reachedTarget: boolean;
+  product: {
+    id: string;
+    slug: string;
+    canonicalName: string;
+    brand: string | null;
+    imageUrl: string | null;
+    currentBestPriceCents: number | null;
+    bestStoreName: string | null;
+    bestStoreUrl: string | null;
+  };
+}
+
+export interface UserOverviewDTO {
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    image: string | null;
+  };
+  stats: {
+    favoritesCount: number;
+    activeAlertsCount: number;
+    reachedAlertsCount: number;
+    listsCount: number;
+    priceDropsSinceSavedCount: number;
+    totalPotentialSavingsCents: number;
+  };
+  favorites: FavoriteProductDTO[];
+  alerts: UserAlertDTO[];
+  lists: ShoppingListDTO[];
 }

@@ -1,0 +1,174 @@
+name: Scheduled Scrape
+
+# RegateoApp · scraping de tiendas panameñas cada 3 días.
+# 08:00 UTC = 03:00 hora de Panamá. Ajusta el cron si cambias SCRAPE_INTERVAL_DAYS
+# (1..7 días): '0 8 */3 * *' → cada 3 días; '0 8 */5 * *' → cada 5 días.
+
+on:
+  schedule:
+    - cron: "0 8 */3 * *"
+  workflow_dispatch:
+    inputs:
+      stores:
+        description: "Tiendas separadas por coma (all = las 6)"
+        required: false
+        default: "all"
+        type: string
+      max_per_store:
+        description: "Máximo de productos por tienda (1-20000, 5000 = catálogo completo)"
+        required: false
+        default: "5000"
+        type: string
+      mode:
+        description: "direct = escribe en DATABASE_URL · api = POST /api/cron/scrape"
+        required: false
+        default: "direct"
+        type: choice
+        options:
+          - direct
+          - api
+      use_firecrawl:
+        description: "Usar Firecrawl para Panafoto / Foto Sonido / Audiofoto"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: scheduled-scrape
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scrape:
+    name: Scrape (${{ inputs.mode || 'direct' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_POOLER: ${{ vars.DATABASE_POOLER || 'true' }}
+      FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+      FIRECRAWL_API_URL: ${{ vars.FIRECRAWL_API_URL }}
+      SCRAPE_INTERVAL_DAYS: ${{ vars.SCRAPE_INTERVAL_DAYS || '3' }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      API_URL: ${{ vars.API_URL || 'https://api.regateoapp.com' }}
+      STORES: ${{ inputs.stores || 'all' }}
+      MAX_PER_STORE: ${{ inputs.max_per_store || '5000' }}
+      USE_FIRECRAWL: ${{ inputs.use_firecrawl == false && 'no' || 'yes' }}
+      MODE: ${{ inputs.mode || 'direct' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck scraper
+        run: bun --filter @regateo/scraper typecheck
+
+      - name: Push database schema
+        if: env.MODE == 'direct' && env.DATABASE_URL != ''
+        run: bun --filter @regateo/db db:push
+        continue-on-error: true
+
+      - name: Resolve CLI flags
+        id: flags
+        run: |
+          set -euo pipefail
+          FLAGS="--max=${MAX_PER_STORE}"
+          if [ "$STORES" != "all" ] && [ -n "$STORES" ]; then
+            FLAGS="$FLAGS --stores=${STORES}"
+          fi
+          if [ "$USE_FIRECRAWL" = "no" ]; then
+            FLAGS="$FLAGS --no-firecrawl"
+          fi
+          echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
+          echo "flags: $FLAGS"
+
+      - name: Run scraper against DATABASE_URL
+        if: env.MODE == 'direct'
+        id: scrape
+        working-directory: packages/scraper
+        run: |
+          set -o pipefail
+          bun src/cli.ts ${{ steps.flags.outputs.flags }} --json | tee scrape-result.json
+
+      - name: Trigger API cron endpoint
+        if: env.MODE == 'api'
+        run: |
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET no está configurado"
+            exit 1
+          fi
+          if [ "$STORES" = "all" ] || [ -z "$STORES" ]; then
+            STORES_JSON=null
+          else
+            STORES_JSON=$(printf '%s' "$STORES" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
+          fi
+          USE_FC_JSON=$([ "$USE_FIRECRAWL" = "no" ] && echo false || echo true)
+          BODY=$(jq -cn --argjson stores "$STORES_JSON" --argjson max "$MAX_PER_STORE" \
+            --argjson fc "$USE_FC_JSON" '{stores: $stores, maxPerStore: $max, useFirecrawl: $fc}')
+          echo "POST ${API_URL}/api/cron/scrape → ${BODY}"
+          curl --fail-with-body --silent --show-error \
+            -X POST "${API_URL}/api/cron/scrape" \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${CRON_SECRET}" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -d "$BODY" | tee scrape-result.json
+
+      - name: Verify database contents
+        if: env.MODE == 'direct' && env.DATABASE_URL != ''
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT 'stores' AS tabla, count(*) FROM stores
+          UNION ALL SELECT 'products', count(*) FROM products
+          UNION ALL SELECT 'store_listings', count(*) FROM store_listings
+          UNION ALL SELECT 'price_history', count(*) FROM price_history
+          UNION ALL SELECT 'scrape_runs', count(*) FROM scrape_runs;
+
+          SELECT count(*) AS productos_comparables_2_mas_tiendas
+          FROM (
+            SELECT product_id
+            FROM store_listings
+            GROUP BY product_id
+            HAVING count(DISTINCT store_id) >= 2
+          ) comparables;
+          SQL
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## 🛒 RegateoApp scheduled scrape"
+            echo ""
+            echo "- Modo: \`${MODE}\`"
+            echo "- Tiendas: \`${STORES}\`"
+            echo "- Máx por tienda: \`${MAX_PER_STORE}\`"
+            echo "- Firecrawl: \`${USE_FIRECRAWL}\`"
+            echo "- Intervalo: cada \`${SCRAPE_INTERVAL_DAYS}\` día(s)"
+            echo ""
+            if [ -f scrape-result.json ]; then
+              echo '```json'
+              head -c 4000 scrape-result.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload run artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-result-${{ github.run_id }}
+          path: scrape-result.json
+          if-no-files-found: ignore
+          retention-days: 14

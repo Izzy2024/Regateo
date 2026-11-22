@@ -229,7 +229,66 @@ export const priceAlerts = pgTable(
   },
   (table) => [
     index("price_alerts_product_id_idx").on(table.productId),
+    index("price_alerts_user_id_idx").on(table.userId),
     index("price_alerts_email_idx").on(table.email),
     index("price_alerts_active_idx").on(table.active),
+  ]
+);
+
+export const userFavorites = pgTable(
+  "user_favorites",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    savedPriceCents: integer("saved_price_cents").notNull(),
+    note: varchar("note", { length: 240 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("user_favorites_user_product_uidx").on(table.userId, table.productId),
+    index("user_favorites_user_id_idx").on(table.userId),
+    index("user_favorites_product_id_idx").on(table.productId),
+  ]
+);
+
+export const userLists = pgTable(
+  "user_lists",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 80 }).notNull(),
+    description: varchar("description", { length: 240 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("user_lists_user_id_idx").on(table.userId),
+  ]
+);
+
+export const userListItems = pgTable(
+  "user_list_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    listId: uuid("list_id")
+      .notNull()
+      .references(() => userLists.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    quantity: integer("quantity").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("user_list_items_list_product_uidx").on(table.listId, table.productId),
+    index("user_list_items_list_id_idx").on(table.listId),
+    index("user_list_items_product_id_idx").on(table.productId),
   ]
 );

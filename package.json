@@ -17,6 +17,8 @@
     "db:generate": "bun --filter @regateo/db db:generate",
     "db:studio": "bun --filter @regateo/db db:studio",
     "scrape": "bun --filter @regateo/scraper scrape",
+    "scrape:radar": "bun scripts/scrape-radar.ts",
+    "scrape:full": "bun scripts/scrape-radar.ts --full",
     "scrape:schedule": "bun --filter @regateo/scraper schedule"
   },
   "devDependencies": {
