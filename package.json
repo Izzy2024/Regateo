@@ -1,0 +1,27 @@
+{
+  "name": "regateoapp",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "bun@1.4.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:api": "bun --filter @regateo/api dev",
+    "dev:web": "bun --filter @regateo/web dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "db:push": "bun --filter @regateo/db db:push",
+    "db:generate": "bun --filter @regateo/db db:generate",
+    "db:studio": "bun --filter @regateo/db db:studio",
+    "scrape": "bun --filter @regateo/scraper scrape",
+    "scrape:schedule": "bun --filter @regateo/scraper schedule"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.15",
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "@regateo/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^5.0.1",
+    "@regateo/shared": "workspace:*",
+    "@tanstack/react-query": "^5.76.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "hono": "^4.7.10",
+    "lucide-react": "^0.511.0",
+    "motion": "^12.12.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-hook-form": "^7.56.4",
+    "recharts": "^2.15.3",
+    "tailwind-merge": "^3.3.0",
+    "zod": "^3.25.76",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@regateo/api": "workspace:*",
+    "@tailwindcss/vite": "^4.1.7",
+    "@types/react": "^19.1.4",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^4.5.0",
+    "tailwindcss": "^4.1.7",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

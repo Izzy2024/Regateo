@@ -1,0 +1,32 @@
+{
+  "name": "@regateo/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./rpc": "./src/app.ts"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^1.3.22",
+    "@hono/zod-validator": "^0.7.0",
+    "@regateo/db": "workspace:*",
+    "@regateo/scraper": "workspace:*",
+    "@regateo/shared": "workspace:*",
+    "@upstash/ratelimit": "^2.0.5",
+    "@upstash/redis": "^1.34.9",
+    "ai": "^4.3.16",
+    "better-auth": "^1.2.9",
+    "hono": "^4.7.10",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.15",
+    "typescript": "^5.8.3"
+  }
+}

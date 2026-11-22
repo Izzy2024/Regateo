@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.output/
+.turbo/
+.firecrawl/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+coverage/
+.agent-briefs/
