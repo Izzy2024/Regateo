@@ -20,3 +20,13 @@ createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </StrictMode>
 );
+
+// PWA: registra el service worker solo en producción.
+// /sw.js no cachea /api/ ni /out/ (precios siempre network-only).
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // El SW es opcional: ignoramos fallos de registro.
+    });
+  });
+}

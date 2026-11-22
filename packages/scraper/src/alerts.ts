@@ -11,6 +11,40 @@ import { db, inArray, priceAlerts, sql, sqlClient } from "@regateo/db";
 
 const ALERT_COOLDOWN_HOURS = 24;
 
+export interface AlertTriggerInput {
+  active: boolean;
+  verified: boolean;
+  inStock: boolean;
+  targetPriceCents: number;
+  bestPriceCents: number | null | undefined;
+  lastTriggeredAt?: Date | string | null;
+  now?: Date;
+  cooldownHours?: number;
+}
+
+/**
+ * Reglas puras de disparo (sin BD) para poder testearlas y reutilizarlas:
+ * alerta activa + verificada + producto en stock + precio ≤ objetivo +
+ * sin disparo en las últimas 24 h.
+ */
+export function shouldTriggerAlert(input: AlertTriggerInput): boolean {
+  if (!input.active || !input.verified || !input.inStock) return false;
+  const best = input.bestPriceCents;
+  if (typeof best !== "number" || !Number.isFinite(best) || best <= 0) return false;
+  if (best > input.targetPriceCents) return false;
+
+  if (!input.lastTriggeredAt) return true;
+  const last =
+    input.lastTriggeredAt instanceof Date
+      ? input.lastTriggeredAt.getTime()
+      : new Date(input.lastTriggeredAt).getTime();
+  if (!Number.isFinite(last)) return true;
+
+  const now = (input.now ?? new Date()).getTime();
+  const cooldownMs = (input.cooldownHours ?? ALERT_COOLDOWN_HOURS) * 60 * 60 * 1000;
+  return now - last >= cooldownMs;
+}
+
 export interface AlertDispatchResult {
   checked: number;
   triggered: number;

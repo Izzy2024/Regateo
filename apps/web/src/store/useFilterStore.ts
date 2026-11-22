@@ -9,6 +9,7 @@ import { create } from "zustand";
 export type AppView =
   | "catalogo"
   | "ofertas"
+  | "guias"
   | "tiendas"
   | "mi-espacio"
   | "privacidad";
@@ -53,6 +54,7 @@ function readInitialView(): AppView {
     vista === "ofertas" ||
     vista === "tiendas" ||
     vista === "catalogo" ||
+    vista === "guias" ||
     vista === "mi-espacio" ||
     vista === "privacidad"
   ) {

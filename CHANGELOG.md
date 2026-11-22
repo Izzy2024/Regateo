@@ -2,6 +2,17 @@
 
 Todos los cambios relevantes del proyecto se documentan aquí siguiendo [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.5.0] - 2026-11-21
+
+### Fase 3 — Confianza Avanzada, Distribución SEO, Retención y PWA
+- **Detector de descuentos falsos + "¿Compro ahora o espero?" (`insights.ts` + `ProductDetailModal.tsx`):** análisis honesto del historial real (`daysTracked`, mínimo/promedio, detección de descuentos sospechosos sin respaldo histórico) + botón 1-clic **Compartir por WhatsApp**.
+- **Guías automáticas de compra en Panamá (`GET /api/guides` + `GuidesView.tsx`):** 4 guías vivas generadas desde datos en stock (*Mejores Smart TV 55"*, *Laptops bajo $700*, *Celulares comparados*, *Línea Blanca en oferta*), accesibles en `?vista=guias` desde Header y Footer.
+- **SEO ampliado (`/c/:category`, `/tienda/:slug` + `sitemap.xml`):** páginas SSR con Open Graph y JSON-LD `CollectionPage`/`ItemList` sumadas a `/p/:slug`.
+- **Analítica interna de negocio (`GET /api/admin/analytics`):** protegida con `CRON_SECRET` — clics salientes por tienda, top productos clicados, búsquedas más frecuentes, búsquedas sin resultado y reportes abiertos.
+- **Resumen semanal y canal de ofertas (`packages/scraper/src/digest.ts`):** generador de posts de ofertas verificadas para canal WhatsApp/Telegram y digest semanal de bajadas en favoritos.
+- **PWA instalable segura (`manifest.webmanifest` + `sw.js`):** instalable en móvil sin cachear jamás `/api/` ni `/out/`.
+- **Suite de tests ampliada (`phase3.test.ts` + `matching.test.ts`):** 140+ tests automatizados pasando en `bun test`.
+
 ## [0.4.0] - 2026-11-21
 
 ### Fase 2 — Escalabilidad, Auth Completa, Cobertura y UX

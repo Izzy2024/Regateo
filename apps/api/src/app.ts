@@ -8,6 +8,8 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { ZodError } from "zod";
 import {
+  CATEGORY_LABELS,
+  PRODUCT_CATEGORIES,
   addListItemSchema,
   aiChatRequestSchema,
   createFavoriteSchema,
@@ -19,6 +21,7 @@ import {
   syncFavoritesSchema,
   triggerScrapeSchema,
   updateAlertSchema,
+  type ProductCategory,
   type ProductSearchQuery,
 } from "@regateo/shared";
 import {
@@ -61,8 +64,11 @@ import {
   getStoresStatus,
   productExistsById,
   searchProducts,
+  getBuyingGuideBySlug,
+  getBuyingGuides,
   type ScrapeRunDTO,
 } from "./services/catalog";
+import { getAnalyticsSummary } from "./services/admin-analytics";
 import { aiChatHandler } from "./routes/ai";
 import {
   addItemToUserList,
@@ -219,6 +225,66 @@ const triggerScrapeQuerySchema = z.object({
     .transform((v) => v === true || v === "true")
     .optional(),
 });
+
+const analyticsQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(90).default(30),
+});
+
+/** Escapado HTML para contenido dinámico de las páginas SEO. */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Página SEO de colección (categoría/tienda) con OG + JSON-LD + redirect SPA. */
+function seoCollectionHtml(input: {
+  title: string;
+  description: string;
+  canonicalPath: string;
+  spaUrl: string;
+  accentColor: string;
+  heading: string;
+  lead: string;
+  jsonLd: unknown;
+  items: Array<{ name: string; price: string; storeName: string | null }>;
+}): string {
+  const itemListHtml = input.items
+    .map(
+      (item) =>
+        `<li>${escapeHtml(item.name)} — <strong>${item.price}</strong>${
+          item.storeName ? ` en ${escapeHtml(item.storeName)}` : ""
+        }</li>`
+    )
+    .join("");
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(input.title)}</title>
+<meta name="description" content="${escapeHtml(input.description)}">
+<link rel="canonical" href="${input.canonicalPath}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RegateoApp">
+<meta property="og:title" content="${escapeHtml(input.title)}">
+<meta property="og:description" content="${escapeHtml(input.description)}">
+<meta name="twitter:card" content="summary">
+<script type="application/ld+json">${JSON.stringify(input.jsonLd)}</script>
+</head>
+<body>
+<main style="font-family:system-ui,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem">
+<h1 style="color:${input.accentColor}">${escapeHtml(input.heading)}</h1>
+<p>${escapeHtml(input.lead)}</p>
+<ul>${itemListHtml}</ul>
+<p><a href="${input.spaUrl}" style="color:#e11d48">Comparar precios completos en RegateoApp</a></p>
+</main>
+<script>setTimeout(function(){window.location.replace("${input.spaUrl}");},1500);</script>
+</body>
+</html>`;
+}
 
 // ---------------------------------------------------------------------------
 // Rutas encadenadas (el orden importa: /api/products/deals antes de :slug)
@@ -930,8 +996,8 @@ const routes = app
 
   .get("/sitemap.xml", async (c) => {
     const origin = new URL(c.req.url).origin;
-    const { value } = await cacheGetOrSet("seo:sitemap", 3600, async () => {
-      const [productRows, categoryRows] = await Promise.all([
+    const { value } = await cacheGetOrSet("seo:sitemap:v2", 3600, async () => {
+      const [productRows, categoryRows, storeRows] = await Promise.all([
         db
           .select({ slug: products.slug, updatedAt: products.updatedAt })
           .from(products)
@@ -941,12 +1007,25 @@ const routes = app
           .select({ key: products.category })
           .from(products)
           .groupBy(products.category),
+        db.select({ slug: stores.slug }).from(stores),
       ]);
 
       const urls: string[] = [];
+      // SPA (por compatibilidad de enlaces compartidos)
       for (const row of categoryRows) {
         urls.push(
           `  <url><loc>${webUrl}/?categoria=${row.key}</loc><changefreq>daily</changefreq></url>`
+        );
+      }
+      // Páginas SEO de categorías y tiendas (Fase 3)
+      for (const row of categoryRows) {
+        urls.push(
+          `  <url><loc>${origin}/c/${row.key}</loc><changefreq>daily</changefreq></url>`
+        );
+      }
+      for (const row of storeRows) {
+        urls.push(
+          `  <url><loc>${origin}/tienda/${row.slug}</loc><changefreq>daily</changefreq></url>`
         );
       }
       for (const row of productRows) {
@@ -1058,7 +1137,203 @@ const routes = app
 </html>`;
 
     return c.body(html, 200, { "content-type": "text/html; charset=UTF-8" });
-  });
+  })
+
+  // ------------------------------------------------------------- guías de compra
+  .get("/api/guides", async (c) => {
+    const { value, cached } = await cacheGetOrSet("catalog:guides", 300, async () => ({
+      guides: await getBuyingGuides(),
+    }));
+    return c.json({ guides: value.guides, meta: { cached } });
+  })
+
+  .get("/api/guides/:slug", async (c) => {
+    const slug = c.req.param("slug");
+    const { value, cached } = await cacheGetOrSet(
+      `catalog:guide:${slug}`,
+      300,
+      async () => ({ guide: await getBuyingGuideBySlug(slug) })
+    );
+    if (!value.guide) {
+      return c.json(
+        { error: "not_found", message: `Guía no encontrada: ${slug}` },
+        404
+      );
+    }
+    return c.json({ guide: value.guide, meta: { cached } });
+  })
+
+  // ------------------------------------------------------------- SEO colecciones
+  // Categoría: HTML SEO-ready + JSON-LD CollectionPage/ItemList + redirect SPA
+  .get("/c/:category", async (c) => {
+    const category = c.req.param("category") as ProductCategory;
+    if (!PRODUCT_CATEGORIES.includes(category)) {
+      return c.body(
+        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-\"><title>Categoría no encontrada — RegateoApp</title></head><body><h1>Categoría no encontrada</h1><p><a href=\"" +
+          webUrl +
+          "\">Ir a RegateoApp</a></p></body></html>",
+        404,
+        { "content-type": "text/html; charset=UTF-8" }
+      );
+    }
+
+    const origin = new URL(c.req.url).origin;
+    const { value } = await cacheGetOrSet(
+      `seo:category:${category}`,
+      300,
+      async () => {
+        const result = await searchProducts({
+          category,
+          sort: "most-stores",
+          page: 1,
+          limit: 12,
+        });
+        return { total: result.pagination.total, items: result.items };
+      }
+    );
+
+    const label = CATEGORY_LABELS[category];
+    const spaUrl = `${webUrl}/?categoria=${category}`;
+    const description = `Compara precios de ${label} en tiendas de Panamá con RegateoApp: ${value.total} productos monitoreados, precios reales verificados y ahorro entre tiendas.`;
+    const jsonLd = {
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      name: `${label} — Compara precios en Panamá | RegateoApp`,
+      url: `${origin}/c/${category}`,
+      description,
+      mainEntity: {
+        "@type": "ItemList",
+        numberOfItems: value.items.length,
+        itemListElement: value.items.map((item: any, index: number) => ({
+          "@type": "ListItem",
+          position: index + 1,
+          url: `${origin}/p/${item.slug}`,
+          name: item.canonicalName,
+        })),
+      },
+    };
+
+    return c.body(
+      seoCollectionHtml({
+        title: `${label} — Compara precios en Panamá | RegateoApp`,
+        description,
+        canonicalPath: `${origin}/c/${category}`,
+        spaUrl,
+        accentColor: "#0f172a",
+        heading: label,
+        lead: `${value.total} productos comparados entre tiendas panameñas. Precios verificados directamente en cada tienda.`,
+        jsonLd,
+        items: value.items.map((item: any) => ({
+          name: item.canonicalName,
+          price: formatUsdFromCents(item.bestPriceCents),
+          storeName: item.bestStore?.name ?? null,
+        })),
+      }),
+      200,
+      { "content-type": "text/html; charset=UTF-8" }
+    );
+  })
+
+  // Tienda: HTML SEO-ready + JSON-LD CollectionPage/ItemList + redirect SPA
+  .get("/tienda/:slug", async (c) => {
+    const slug = c.req.param("slug");
+    const [store] = await db
+      .select({
+        slug: stores.slug,
+        name: stores.name,
+        color: stores.color,
+        baseUrl: stores.baseUrl,
+      })
+      .from(stores)
+      .where(eq(stores.slug, slug))
+      .limit(1);
+
+    if (!store) {
+      return c.body(
+        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-\"><title>Tienda no encontrada — RegateoApp</title></head><body><h1>Tienda no encontrada</h1><p><a href=\"" +
+          webUrl +
+          "\">Ir a RegateoApp</a></p></body></html>",
+        404,
+        { "content-type": "text/html; charset=UTF-8" }
+      );
+    }
+
+    const origin = new URL(c.req.url).origin;
+    const { value } = await cacheGetOrSet(`seo:store:${slug}`, 300, async () => {
+      const result = await searchProducts({
+        store: slug,
+        sort: "most-stores",
+        page: 1,
+        limit: 12,
+      });
+      return { total: result.pagination.total, items: result.items };
+    });
+
+    const spaUrl = `${webUrl}/?tienda=${slug}`;
+    const description = `Catálogo de ${store.name} monitoreado por RegateoApp: ${value.total} productos con precios reales verificados y comparados con otras tiendas de Panamá.`;
+    const jsonLd = {
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      name: `${store.name} — Precios verificados en Panamá | RegateoApp`,
+      url: `${origin}/tienda/${slug}`,
+      description,
+      mainEntity: {
+        "@type": "ItemList",
+        numberOfItems: value.items.length,
+        itemListElement: value.items.map((item: any, index: number) => ({
+          "@type": "ListItem",
+          position: index + 1,
+          url: `${origin}/p/${item.slug}`,
+          name: item.canonicalName,
+        })),
+      },
+    };
+
+    return c.body(
+      seoCollectionHtml({
+        title: `${store.name} — Precios verificados en Panamá | RegateoApp`,
+        description,
+        canonicalPath: `${origin}/tienda/${slug}`,
+        spaUrl,
+        accentColor: store.color,
+        heading: store.name,
+        lead: `${value.total} productos monitoreados en ${store.name}. Compara con otras tiendas antes de comprar.`,
+        jsonLd,
+        items: value.items.map((item: any) => ({
+          name: item.canonicalName,
+          price: formatUsdFromCents(item.bestPriceCents),
+          storeName: item.bestStore?.name ?? null,
+        })),
+      }),
+      200,
+      { "content-type": "text/html; charset=UTF-8" }
+    );
+  })
+
+  // ------------------------------------------------------------- analítica interna
+  // Métricas de negocio protegidas con CRON_SECRET (mismo esquema que /api/cron)
+  .get(
+    "/api/admin/analytics",
+    zValidator("query", analyticsQuerySchema, validationHook),
+    async (c) => {
+      const cronSecret = process.env.CRON_SECRET;
+      const headerSecret = c.req.header("x-cron-secret");
+      const authorization = c.req.header("authorization");
+      const bearer = authorization?.startsWith("Bearer ")
+        ? authorization.slice("Bearer ".length)
+        : undefined;
+
+      if (!cronSecret || (headerSecret !== cronSecret && bearer !== cronSecret)) {
+        return c.json(
+          { error: "unauthorized", message: "Secreto de cron inválido." },
+          401
+        );
+      }
+
+      const { days } = c.req.valid("query");
+      return c.json(await getAnalyticsSummary(days));
+    }
+  );
 
 export type AppType = typeof routes;
 export { app, routes };

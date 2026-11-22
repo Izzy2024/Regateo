@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   Flame,
   Heart,
   LogOut,
@@ -22,6 +23,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { id: "catalogo", label: "Explorar", shortLabel: "Explorar", icon: Search },
   { id: "ofertas", label: "Mejores Ofertas", shortLabel: "Ofertas", icon: Flame },
+  { id: "guias", label: "Guías", shortLabel: "Guías", icon: BookOpen },
   { id: "tiendas", label: "Tiendas y Radar", shortLabel: "Tiendas", icon: Radar },
   { id: "mi-espacio", label: "Mi Espacio", shortLabel: "Mi Espacio", icon: Heart },
 ];

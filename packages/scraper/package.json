@@ -13,6 +13,7 @@
     "cleanup": "bun src/cleanup.ts",
     "candidates": "bun src/candidates.ts",
     "stats:refresh": "bun src/refresh-stats.ts",
+    "digest": "bun src/digest.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

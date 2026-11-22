@@ -1,0 +1,19 @@
+{
+  "name": "RegateoApp — Precios de Electrónica en Panamá",
+  "short_name": "RegateoApp",
+  "description": "Compara precios reales de electrónica entre 8 tiendas de Panamá: Panafoto, Multimax, Rodelag, Almacenes Titán, Photura, Do it Center, Yoytec y PTYTEC.",
+  "lang": "es-PA",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FAFAF7",
+  "theme_color": "#FAFAF7",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -22,8 +22,21 @@ export {
 
 export {
   evaluateAndDispatchPriceAlerts,
+  shouldTriggerAlert,
   type AlertDispatchResult,
+  type AlertTriggerInput,
 } from "./alerts";
+
+export {
+  buildChannelDealsMessage,
+  formatChannelDealsText,
+  sendWeeklyFavoritesDigest,
+  type ChannelDeal,
+  type ChannelDealsMessage,
+  type ChannelDealsOptions,
+  type WeeklyDigestOptions,
+  type WeeklyDigestResult,
+} from "./digest";
 
 export type { RawScrapedItem, StoreAdapter, ScrapeEngine, IngestResult } from "./types";
 

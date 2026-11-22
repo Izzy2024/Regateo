@@ -55,7 +55,8 @@ regateoapp/
 ├── CONTRIBUTING.md                             # Guía de contribución y estándares
 │
 ├── .github/workflows/
-│   └── scheduled-scrape.yml                    # Automatización GitHub Actions cada 3 días (08:00 UTC) + dispatch manual
+│   ├── ci.yml                                  # CI: install, typecheck, Biome (no bloqueante), bun test, build
+│   └── scheduled-scrape.yml                    # Barrido DIARIO (08:00 UTC / 03:00 Panamá) + dispatch manual
 │
 ├── scripts/
 │   └── scrape-radar.ts                         # Script CLI interno del operador (scrape masivo + flush de caché API)
@@ -65,7 +66,8 @@ regateoapp/
 │   │   └── src/
 │   │       ├── index.ts
 │   │       ├── schemas.ts                      # PANAMA_STORES (8 tiendas), categorías, Zod schemas y DTOs E2E
-│   │       └── normalize.ts                    # slugify, extractBrand, extractModelNumber, classifyCategory, formatUsdFromCents
+│   │       ├── normalize.ts                    # slugify, extractBrand, extractModelNumber, classifyCategory, formatUsdFromCents
+│   │       └── import-calculator.ts             # calculateAmazonPanamaImport (CIF + courier + ITBMS/aduana, veredicto)
 │   │
 │   ├── db/                                     # @regateo/db — Esquema Drizzle ORM, cliente pooler y migraciones SQL
 │   │   ├── drizzle.config.ts                   # Configuración Drizzle Kit (PostgreSQL)
@@ -80,11 +82,15 @@ regateoapp/
 │   └── scraper/                                # @regateo/scraper — Motor multi-tienda, matcher estricto y scheduler
 │       ├── README.md
 │       └── src/
-│           ├── index.ts                        # Exports públicos: ensureStoresSeeded, runScrapePipeline
-│           ├── pipeline.ts                     # Orquestador de corridas (DEFAULT 5,000 / HARD 20,000 por tienda)
-│           ├── ingest.ts                       # Upsert seguro + guardrail de precio >2.2x + registro en price_history
-│           ├── matching.ts                     # Matcher estricto (modelo exacto + variante/panel OLED/QLED/LED, 0 falsos merges)
-│           ├── cleanup.ts                      # Limpieza/separación de fusiones erróneas históricas en PostgreSQL
+│           ├── index.ts                        # Exports públicos: pipeline, ingest, alertas, digest, agregados, candidatos
+│           ├── pipeline.ts                     # Orquestador (2 tiendas en paralelo, AbortSignal, health-check, alertas)
+│           ├── ingest.ts                       # Upsert seguro + guardrail 2.2x + color + agotados + agregados
+│           ├── matching.ts                     # Matcher estricto (modelo/variante/panel/serie, familias, GTIN, colores)
+│           ├── refresh-stats.ts                # refreshProductAggregates(): best/highest/savings/store_count O(1)
+│           ├── candidates.ts                   # Candidatos multi-tienda (pg_trgm + reglas 1.65x/panel/tamaño/tier)
+│           ├── alerts.ts                       # Motor real de alertas post-barrido (Resend + log + dedupe 24h)
+│           ├── digest.ts                       # Canal WhatsApp/Telegram + resumen semanal de favoritos
+│           ├── cleanup.ts                      # Re-agrupamiento, color backfill, agregados y reporte antes/después
 │           ├── enrich.ts                       # Enriquecimiento cruzado por código de modelo entre tiendas
 │           ├── firecrawl-client.ts             # Cliente unificado Firecrawl (SDK → CLI local → fallback HTTP)
 │           ├── http.ts                         # Helper HTTP con retries, backoff exponencial y concurrencia controlada
@@ -92,6 +98,8 @@ regateoapp/
 │           ├── scheduler.ts                    # Daemon programado cada SCRAPE_INTERVAL_DAYS (3–5 días)
 │           ├── scheduler-config.ts             # Validación y cálculo de próxima corrida
 │           ├── types.ts                        # Interfaces RawScrapedItem, StoreAdapter, AdapterContext
+│           ├── matching.test.ts                # Suite del matcher + candidatos (117 tests)
+│           ├── phase3.test.ts                  # Suite Fase 3: import-calculator, digest y alertas (29 tests)
 │           └── adapters/
 │               ├── index.ts                    # Registro de los 8 adaptadores activos
 │               ├── shopify.ts                  # Multimax, Rodelag, Almacenes Titán, Photura (colecciones + catálogo global)
@@ -169,8 +177,8 @@ PostgreSQL con **13 tablas** indexadas desde el día uno en todas las claves for
 | --- | --- | --- |
 | **Autenticación (Better Auth)** | `user`, `session`, `account`, `verification` | Usuarios, sesiones con cookies `HttpOnly`, credenciales y verificación |
 | **Catálogo y Comparación** | `stores` | Registro de las 8 tiendas de Panamá (slug, color, plataforma, `last_scraped_at`) |
-| | `products` | Producto canónico único (`match_key` estricto, marca, modelo, categoría, specs JSONB) |
-| | `store_listings` | Oferta exacta de una tienda (`price_cents`, `original_price_cents`, stock, URL real verificable) |
+| | `products` | Producto canónico único (`match_key` estricto, marca, modelo, categoría, specs JSONB) + **columnas materializadas**: `best_price_cents`, `highest_price_cents`, `savings_cents/percent`, `store_discount_cents/percent`, `store_count`, `in_stock_count` (índices dedicados) |
+| | `store_listings` | Oferta exacta de una tienda (`price_cents`, `original_price_cents`, stock, **`color`**, URL real verificable) |
 | | `price_history` | Serie temporal de precios por listing para gráficos Recharts |
 | | `scrape_runs` | Auditoría de cada barrido por tienda (motor, estado, encontrados, actualizados, error) |
 | **Mi Espacio (Usuario)** | `user_favorites` | Favoritos persistentes + `saved_price_cents` para calcular bajadas desde que guardaste |
@@ -193,14 +201,21 @@ PostgreSQL con **13 tablas** indexadas desde el día uno en todas las claves for
 | `GET /api/security/captcha` | Rate Limit `30/min` | Entrega configuración Turnstile o desafío HMAC anti-bot firmado |
 | `POST /api/auth/sign-up/email` | **CAPTCHA + Rate Limit `12/min`** | Registro de usuario con Better Auth |
 | `POST /api/auth/sign-in/email` | **CAPTCHA + Rate Limit `12/min`** | Inicio de sesión con Better Auth |
+| `POST /api/auth/request-password-reset` | **Rate Limit** | Envía enlace de restablecimiento de contraseña |
+| `POST /api/auth/forget-password` | **CAPTCHA + Rate Limit** | Alias compatible de recuperación de contraseña |
+| `GET /api/auth/providers` | Pública | Proveedores disponibles (incluye Google OAuth si `GOOGLE_CLIENT_ID/SECRET`) |
 | `ALL /api/auth/*` | Better Auth | Sesión (`get-session`), cierre (`sign-out`) y utilidades de auth |
 | `GET /api/products` | Pública (Cacheada) | Búsqueda multi-token (nombre, marca, modelo, SKU, título de tienda), filtros, facets y paginación |
 | `GET /api/products/deals` | Pública (Cacheada) | Top productos con mayor ahorro real entre tiendas o descuento |
 | `GET /api/products/:slug` | Pública | Detalle completo: tabla exacta de tiendas, historial Recharts y `similarProducts` |
 | `GET /api/products/:slug/similar` | Pública (Cacheada) | Competidores similares en otras tiendas puntuados por marca, specs, título y precio |
 | `GET /api/stores` | Pública | Estado en vivo de las 8 tiendas y registro reciente de corridas |
+| `GET /api/guides` · `GET /api/guides/:slug` | Pública (Cacheada) | Guías de compra por presupuesto/categoría con productos comparados |
+| `GET /api/admin/analytics` | **`CRON_SECRET` / admin** | KPIs: clics outbound por tienda, búsquedas top, búsquedas sin resultado, cobertura multi-tienda |
 | `POST /api/alerts` | **CAPTCHA + Rate Limit `10/min`** | Crear alerta de precio objetivo (se vincula al usuario si hay sesión) |
 | `GET /api/alerts?email=...` | Pública | Consultar alertas activas por correo |
+| `GET /api/alerts/confirm?token=...` | Pública | Verificación de correo antes de activar la alerta (`verified = true`) |
+| `GET /out/:listingId` | Pública (medida) | Redirección 302 a la tienda real + registro de `outbound_clicks` (`src=web\|alert\|whatsapp\|digest`) |
 | `POST /api/ai/chat` | Rate Limit `20/min` | Streaming SSE con Vercel AI SDK (`DeepSeek` / `OpenRouter`) y tools reales contra PostgreSQL |
 | `GET /api/me/overview` | **Sesión Better Auth (`401`)** | Dashboard completo de Mi Espacio (KPIs, favoritos con bajadas, listas optimizadas, alertas) |
 | `POST/DELETE /api/me/favorites` | **Sesión Better Auth (`401`)** | Guardar (con `savedPriceCents`) o quitar favoritos |
@@ -233,11 +248,84 @@ PostgreSQL con **13 tablas** indexadas desde el día uno en todas las claves for
 El panel web **Tiendas y Radar** es estrictamente de solo lectura para evitar colapsos por tráfico externo. Las corridas se ejecutan internamente vía:
 - **Script operador:** `bun run scrape:radar` (o `bun run scrape:full`, o `bun run scrape:radar --stores=panafoto,yoytec`)
 - **Scheduler VPS/Render:** `bun run scrape:schedule` (configurable con `SCRAPE_INTERVAL_DAYS=3`)
-- **GitHub Actions:** `.github/workflows/scheduled-scrape.yml` (cron cada 3 días a las 08:00 UTC)
+- **GitHub Actions:** `.github/workflows/scheduled-scrape.yml` (**cron diario** `0 8 * * *`, 03:00 Panamá) con despacho de alertas
+- **Post-barrido:** `bun --filter @regateo/scraper alerts:check` (alertas), `candidates` (cobertura), `stats:refresh` (agregados), `digest` (canal + resumen semanal)
+- **CI:** `.github/workflows/ci.yml` ejecuta `bun run typecheck`, Biome (diagnóstico de errores, no bloqueante), `bun test` y `bun run build`
 
 ---
 
-## 6. Seguridad Anti-Bot y Privacidad (Ley 81 de Panamá)
+## 6. Fase 2 y Fase 3 — Datos, Alertas, Digest y Cobertura
+
+### 6.1 Agregados materializados (`packages/scraper/src/refresh-stats.ts`)
+`refreshProductAggregates(productIds?)` recalcula en una sola sentencia SQL y deja en `products`:
+`best_price_cents` (mínimo en stock, con fallback al mínimo absoluto), `highest_price_cents`,
+`savings_cents/percent` (solo con 2+ tiendas en stock, tope 99%), `store_discount_cents/percent`
+(descuento del ganador sobre su `original_price_cents`, 0 si supera 65%), `store_count` e
+`in_stock_count`. Se ejecuta al final de cada ingesta, del re-agrupamiento y de la fusión de
+candidatos; los productos sin listings quedan en 0 (nunca `NULL`). La API consulta estos campos
+en O(1) con índices dedicados.
+
+Además, `store_listings.color` se extrae del título en cada ingesta (`extractColor`) y se
+backfillea en `cleanup.ts`; el color nunca forma parte del `match_key`.
+
+### 6.2 Candidatos multi-tienda (`candidates.ts`)
+Con `pg_trgm.similarity()` (fallback si la extensión no está) propone pares de productos de
+tiendas distintas en **celulares, televisores y computadoras**. Solo auto-fusiona con:
+misma marca/categoría, no accesorios, tiendas disjuntas, mismo modelo/serie/GTIN, mismo
+almacenamiento, tamaño (TV y laptops), panel y tier (FE/Plus/Ultra/Pro Max), ratio de precio
+**≤1.65** y similitud de título **≥0.35**. Reporta fusiones, rechazos y salto de cobertura, y
+refresca los agregados. Con `OPENAI_API_KEY`/`OPENROUTER_API_KEY` queda lista la siguiente capa
+de embeddings (pgvector + `embedding_text`).
+
+### 6.3 Alertas reales (`alerts.ts`)
+Al final de cada pipeline, `evaluateAndDispatchPriceAlerts()` toma alertas
+`active AND verified`, sin disparo en 24 h, y cruza con la mejor oferta **en stock**. Si
+`mejor precio ≤ objetivo`, envía correo HTML vía Resend (`RESEND_API_KEY`,
+`ALERTS_FROM_EMAIL`) con asunto `🔥 Bajó de precio: …` y enlace medido
+`/out/<listingId>?src=alert`; sin API key registra `[ALERTA DISPARADA]` estructurado. Actualiza
+`price_alerts.last_triggered_at`. Las reglas puras (`shouldTriggerAlert`) están cubiertas por tests.
+
+### 6.4 Digest semanal y canal WhatsApp/Telegram (`digest.ts`)
+- `buildChannelDealsMessage()`: top 5 ofertas con `savings_cents > 0`, `store_count >= 2` e
+  `in_stock_count >= 2`, formateadas en Markdown-friendly con precio, tienda ganadora, ahorro
+  verificable y enlace `/out/<id>?src=whatsapp`.
+- `sendWeeklyFavoritesDigest()`: usuarios con favoritos cuyo `best_price_cents` actual es menor
+  que el `saved_price_cents` con el que guardaron; envía HTML por Resend o imprime el resumen
+  estructurado (`--dry-run`). Script: `bun --filter @regateo/scraper digest`.
+
+### 6.5 Calculadora de importación (`@regateo/shared/import-calculator.ts`)
+`calculateAmazonPanamaImport()` estima el costo puesto en Panamá: ítem + tax USA opcional +
+courier aéreo Miami→PTY (`$3.5/lb`, peso mínimo 0.5 lb) + handling + arancel/ITBMS estimado
+(~12% si CIF > $100, exoneración por debajo) y devuelve `verdict: buy-local | import | similar`
+con umbral del 5%. Se usa en el detalle de producto junto a **`priceInsight`**.
+
+### 6.6 `priceInsight` (detector de descuentos falsos)
+El detalle de producto expone `PriceInsightDTO`: días de historial, mínimo/máximo/promedio
+histórico, `fakeDiscountFlag` + nota cuando el “descuento” es artificial, y recomendación
+`buy-now | fair-price | wait | collecting-history` para decidir **¿compro ahora o espero?**.
+
+### 6.7 Auth completa y cuenta
+- **Reset de contraseña:** `POST /api/auth/request-password-reset` (Better Auth) con enlace por correo.
+- **Google OAuth:** `GET /api/auth/providers` expone Google cuando `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+  están configurados; el callback vive en `/api/auth/*`.
+- **Mi Espacio:** favoritos con `savedPriceCents`, listas de presupuesto, alertas y sync tras login.
+
+### 6.8 Rutas SEO y analítica
+- Web: `/c/:category` (categorías indexables), `/tienda/:slug` (landing por comercio) y guías de compra.
+- API: `/api/guides` (guías con productos comparados) y `/api/admin/analytics` (clics outbound por
+  tienda, búsquedas top y sin resultado, cobertura multi-tienda).
+- Redirección medida `/out/:listingId` con contador `outbound_clicks`.
+
+### 6.9 Calidad y entrega
+- **Biome** (`biome.json`, `bun run lint` / `bun x biome check`) en CI como chequeo no bloqueante
+  (`--diagnostic-level=error || true`).
+- **PWA**: manifest + service worker para instalación y cacheo offline del catálogo consultado.
+- **Tests:** `matching.test.ts` (matcher + candidatos) y `phase3.test.ts` (import-calculator,
+  digest, alertas) — **146 tests en total**.
+
+---
+
+## 7. Seguridad Anti-Bot y Privacidad (Ley 81 de Panamá)
 - **Anti-Bot / CAPTCHA:** En producción activar **Cloudflare Turnstile** configurando `TURNSTILE_SECRET_KEY` (backend) y `VITE_TURNSTILE_SITE_KEY` (frontend). En desarrollo local funciona de inmediato el desafío criptográfico HMAC-SHA256 de un solo uso + honeypot invisible + rate limiting por IP.
 - **Privacidad:** Disponible en `?vista=privacidad` y en el footer global, con consentimiento obligatorio en el registro y derechos ARCO (Acceso, Rectificación, Cancelación, Oposición y Portabilidad) conforme a la **Ley 81 de 26 de marzo de 2019** de Panamá.
 - **Privacidad en IA:** Nunca se llaman proveedores LLM desde el navegador; todas las consultas pasan por `apps/api/src/routes/ai.ts` y solo envían el texto de consulta comercial (nunca contraseñas ni datos personales de sesión).

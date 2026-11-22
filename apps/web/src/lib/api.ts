@@ -2,6 +2,7 @@ import { hc } from "hono/client";
 import type { AppType } from "@regateo/api/rpc";
 import type {
   AiChatRequest,
+  BuyingGuideDTO,
   CreatePriceAlertInput,
   CreateShoppingListInput,
   FavoriteProductDTO,
@@ -250,6 +251,10 @@ export function fetchProducts(
 
 export function fetchDeals(): Promise<DealsResponse> {
   return apiFetch<DealsResponse>("/api/products/deals");
+}
+
+export function fetchBuyingGuides(): Promise<{ guides: BuyingGuideDTO[] }> {
+  return apiFetch<{ guides: BuyingGuideDTO[] }>("/api/guides");
 }
 
 export function fetchProductBySlug(slug: string): Promise<ProductDetailResponse> {

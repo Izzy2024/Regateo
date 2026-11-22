@@ -375,10 +375,51 @@ export interface SimilarProductDTO {
   };
 }
 
+export interface PriceInsightDTO {
+  daysTracked: number;
+  historicalLowCents: number | null;
+  historicalHighCents: number | null;
+  historicalAvgCents: number | null;
+  fakeDiscountFlag: boolean;
+  fakeDiscountNote: string | null;
+  buyAdvice: "buy-now" | "fair-price" | "wait" | "collecting-history";
+  buyAdviceLabel: string;
+}
+
 export interface ProductDetailDTO extends ProductSummaryDTO {
   specs: Record<string, unknown> | null;
   priceHistory: PriceHistoryPointDTO[];
   similarProducts?: SimilarProductDTO[];
+  priceInsight?: PriceInsightDTO;
+}
+
+export interface BuyingGuideDTO {
+  slug: string;
+  title: string;
+  subtitle: string;
+  category: ProductCategory | null;
+  maxPriceUsd: number | null;
+  updatedAt: string;
+  itemCount: number;
+  items: ProductSummaryDTO[];
+}
+
+export interface AnalyticsSummaryDTO {
+  periodDays: number;
+  outboundClicksTotal: number;
+  outboundClicksByStore: Array<{ storeSlug: string; storeName: string; clicks: number }>;
+  topClickedProducts: Array<{
+    productId: string;
+    slug: string;
+    canonicalName: string;
+    clicks: number;
+  }>;
+  topSearches: Array<{ query: string; count: number; avgResults: number }>;
+  zeroResultSearches: Array<{ query: string; count: number }>;
+  openPriceReportsCount: number;
+  totalProducts: number;
+  multiStoreProducts: number;
+  multiStoreCoveragePct: number;
 }
 
 export interface StoreStatusDTO {

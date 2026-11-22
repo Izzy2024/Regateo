@@ -1,4 +1,5 @@
 import type {
+  PriceInsightDTO,
   ProductCategory,
   ReportWrongPriceInput,
   SimilarProductDTO,
@@ -10,6 +11,7 @@ import {
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowUpRight,
   Check,
   CheckCircle2,
@@ -18,6 +20,9 @@ import {
   GitCompareArrows,
   Heart,
   ListPlus,
+  Clock,
+  Hourglass,
+  MessageCircle,
   Loader2,
   Package,
   Plus,
@@ -299,6 +304,87 @@ function AmazonImportCalculator({
   );
 }
 
+const PRICE_INSIGHT_STYLES: Record<
+  PriceInsightDTO["buyAdvice"],
+  { background: string; border: string; text: string }
+> = {
+  "buy-now": { background: "#ECFDF5", border: "#A7F3D0", text: "#047857" },
+  "fair-price": { background: "#F4F3EE", border: "#E7E5DF", text: "#111315" },
+  wait: { background: "#FFFBEB", border: "#FDE68A", text: "#B45309" },
+  "collecting-history": { background: "#FAFAF7", border: "#E7E5DF", text: "#525866" },
+};
+
+function PriceInsightCard({ insight }: { insight: PriceInsightDTO }) {
+  const styles = PRICE_INSIGHT_STYLES[insight.buyAdvice];
+  const AdviceIcon =
+    insight.buyAdvice === "buy-now"
+      ? CheckCircle2
+      : insight.buyAdvice === "wait"
+      ? Hourglass
+      : insight.buyAdvice === "fair-price"
+      ? Scale
+      : Clock;
+
+  return (
+    <div className="rounded-xl border border-[#E7E5DF] bg-white p-4 sm:p-5">
+      <div className="flex items-start gap-3">
+        <span
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border"
+          style={{
+            backgroundColor: styles.background,
+            borderColor: styles.border,
+            color: styles.text,
+          }}
+        >
+          <AdviceIcon className="h-4 w-4" strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <span className="block text-[11px] font-bold tracking-[0.03em] text-[#666D7C] uppercase">
+            ¿Compro ahora o espero?
+          </span>
+          <span
+            className="mt-0.5 block text-[15px] font-extrabold tracking-[-0.015em]"
+            style={{ color: styles.text }}
+          >
+            {insight.buyAdviceLabel}
+          </span>
+          {insight.buyAdvice === "collecting-history" ? (
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: styles.text }}>
+              Llevamos {insight.daysTracked}{" "}
+              {insight.daysTracked === 1 ? "día real" : "días reales"} de historial
+              acumulados. Aún es pronto para darte un veredicto de compra confiable.
+            </p>
+          ) : null}
+          {insight.daysTracked >= 2 &&
+          insight.historicalLowCents !== null &&
+          insight.historicalAvgCents !== null ? (
+            <p className="mt-1 text-xs text-[#525866]">
+              Mínimo registrado:{" "}
+              <strong className="font-price font-semibold text-[#111315]">
+                {formatUsd(insight.historicalLowCents)}
+              </strong>{" "}
+              · Promedio:{" "}
+              <strong className="font-price font-semibold text-[#111315]">
+                {formatUsd(insight.historicalAvgCents)}
+              </strong>
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      {insight.fakeDiscountFlag ? (
+        <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] p-3 text-xs text-[#B45309]">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p className="leading-relaxed font-semibold">
+            {insight.fakeDiscountNote ??
+              "El descuento anunciado por la tienda no coincide con el historial real de precios."}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SimilarProductThumb({
   imageUrl,
   alt,
@@ -530,6 +616,25 @@ export function ProductDetailModal() {
     } catch {
       // Ignore clipboard failures
     }
+  };
+
+  const handleShareWhatsApp = () => {
+    if (!product) return;
+    const shareUrl = `${window.location.origin}/?producto=${product.slug}`;
+    const savingsSuffix =
+      product.storeCount >= 2 &&
+      product.savingsCents > 0 &&
+      product.savingsPercent <= 99
+        ? ` (ahorras ${formatUsd(product.savingsCents)} entre tiendas)`
+        : "";
+    const text = `${product.canonicalName} por ${formatUsd(
+      product.bestPriceCents
+    )} en ${product.bestStore?.name ?? "Panamá"}${savingsSuffix}. Compara precios en RegateoApp: ${shareUrl}`;
+    window.open(
+      `https://wa.me/?text=${encodeURIComponent(text)}`,
+      "_blank",
+      "noopener,noreferrer"
+    );
   };
 
   const sortedListings = product
@@ -857,6 +962,11 @@ export function ProductDetailModal() {
                       <Copy className="h-3.5 w-3.5" />
                     )}
                     <span>{copied ? "Enlace copiado" : "Compartir"}</span>
+                  </Button>
+
+                  <Button variant="outline" size="sm" onClick={handleShareWhatsApp}>
+                    <MessageCircle className="h-3.5 w-3.5 text-[#059669]" />
+                    <span>WhatsApp</span>
                   </Button>
 
                   <Button
@@ -1299,6 +1409,10 @@ export function ProductDetailModal() {
                 )}
               </div>
             </section>
+
+            {product.priceInsight ? (
+              <PriceInsightCard insight={product.priceInsight} />
+            ) : null}
 
             <PriceHistoryChart history={product.priceHistory} />
 

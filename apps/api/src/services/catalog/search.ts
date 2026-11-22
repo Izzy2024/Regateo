@@ -51,6 +51,7 @@ import {
   type StatsColumnSet,
 } from "./shared";
 import { findSimilarProducts } from "./similar";
+import { computePriceInsight } from "./insights";
 
 // ---------------------------------------------------------------------------
 // Búsqueda con facetas independientes, unaccent, relevancia pg_trgm y
@@ -298,6 +299,16 @@ export async function getProductBySlug(
   }
 
   const summary = buildSummaryDTO(detailRow, listingDTOs);
+  const priceHistoryPoints: PriceHistoryPointDTO[] = [...seen.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(({ date, storeSlug, storeName, storeColor, priceCents }) => ({
+      date,
+      storeSlug,
+      storeName,
+      storeColor,
+      priceCents,
+    }));
+
   const similarProducts = await findSimilarProducts(
     {
       id: detailRow.id,
@@ -312,19 +323,25 @@ export async function getProductBySlug(
     listingDTOs.map((listing) => listing.storeSlug),
     8
   );
+
+  // "Verdad del precio": historial real + detector de descuentos falsos +
+  // veredicto ¿compro ahora o espero?
+  const priceInsight = computePriceInsight(
+    {
+      bestPriceCents: detailRow.bestPriceCents,
+      highestPriceCents: detailRow.highestPriceCents,
+      savingsCents: detailRow.savingsCents,
+    },
+    listingDTOs,
+    priceHistoryPoints
+  );
+
   return {
     ...summary,
     specs: row.specs ?? null,
     similarProducts,
-    priceHistory: [...seen.values()]
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .map(({ date, storeSlug, storeName, storeColor, priceCents }) => ({
-        date,
-        storeSlug,
-        storeName,
-        storeColor,
-        priceCents,
-      })),
+    priceHistory: priceHistoryPoints,
+    priceInsight,
   };
 }
 

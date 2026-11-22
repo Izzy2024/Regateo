@@ -34,6 +34,9 @@ const StoresDashboard = lazy(() =>
     default: m.StoresDashboard,
   }))
 );
+const GuidesView = lazy(() =>
+  import("@/components/GuidesView").then((m) => ({ default: m.GuidesView }))
+);
 const AccountSpaceView = lazy(() =>
   import("@/components/AccountSpaceView").then((m) => ({
     default: m.AccountSpaceView,
@@ -61,6 +64,7 @@ const AuthModal = lazy(() =>
 const FOOTER_LINKS: Array<{ view: AppView; label: string }> = [
   { view: "catalogo", label: "Explorar catálogo" },
   { view: "ofertas", label: "Mejores ofertas" },
+  { view: "guias", label: "Guías de compra" },
   { view: "tiendas", label: "Tiendas y radar" },
   { view: "mi-espacio", label: "Mi Espacio" },
   { view: "privacidad", label: "Política de Privacidad" },
@@ -507,6 +511,20 @@ export function App() {
             }
           >
             <PrivacyPolicyView />
+          </Suspense>
+        ) : activeView === "guias" ? (
+          <Suspense
+            fallback={
+              <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
+                <Skeleton className="h-10 w-80" />
+                <div className="mt-6 space-y-4">
+                  <Skeleton className="h-20 w-full rounded-2xl" />
+                  <Skeleton className="h-64 w-full rounded-2xl" />
+                </div>
+              </div>
+            }
+          >
+            <GuidesView />
           </Suspense>
         ) : (
           <Suspense
