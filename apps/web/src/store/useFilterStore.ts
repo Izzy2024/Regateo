@@ -1,4 +1,9 @@
-import type { ProductCategory, ProductSearchQuery, ProductSummaryDTO } from "@regateo/shared";
+import {
+  PRODUCT_CATEGORIES,
+  type ProductCategory,
+  type ProductSearchQuery,
+  type ProductSummaryDTO,
+} from "@regateo/shared";
 import { create } from "zustand";
 
 export type AppView =
@@ -38,14 +43,12 @@ function saveStoredArray<T>(key: string, value: T[]) {
 
 function readInitialProductSlug(): string | null {
   if (typeof window === "undefined") return null;
-  const params = new URLSearchParams(window.location.search);
-  return params.get("producto");
+  return new URLSearchParams(window.location.search).get("producto");
 }
 
 function readInitialView(): AppView {
   if (typeof window === "undefined") return "catalogo";
-  const params = new URLSearchParams(window.location.search);
-  const vista = params.get("vista");
+  const vista = new URLSearchParams(window.location.search).get("vista");
   if (
     vista === "ofertas" ||
     vista === "tiendas" ||
@@ -58,27 +61,108 @@ function readInitialView(): AppView {
   return "catalogo";
 }
 
-function syncUrlParams(updates: { producto?: string | null; vista?: AppView }) {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
+const DEFAULT_SORT: SortOption = "most-stores";
+const VALID_SORTS: SortOption[] = [
+    "relevance",
+    "most-stores",
+    "best-savings",
+    "price-asc",
+    "price-desc",
+    "recent",
+];
 
-  if (updates.producto !== undefined) {
-    if (updates.producto) {
-      url.searchParams.set("producto", updates.producto);
-    } else {
-      url.searchParams.delete("producto");
+// Parámetros que este store gestiona en la URL; los demás (utm_*, etc.) se preservan.
+const MANAGED_URL_KEYS: readonly string[] = [
+  "q",
+  "category",
+  "store",
+  "brand",
+  "minPrice",
+  "maxPrice",
+  "inStockOnly",
+  "multiStoreOnly",
+  "sort",
+  "vista",
+  "producto",
+];
+
+interface UrlSyncState {
+  q: string;
+  category: ProductCategory | undefined;
+  store: string | undefined;
+  brand: string | undefined;
+  minPrice: number | undefined;
+  maxPrice: number | undefined;
+  inStockOnly: boolean;
+  multiStoreOnly: boolean;
+  sort: SortOption;
+  activeView: AppView;
+  selectedProductSlug: string | null;
+}
+
+type UrlFilterState = Omit<UrlSyncState, "activeView" | "selectedProductSlug">;
+
+const EMPTY_URL_FILTERS: UrlFilterState = {
+  q: "",
+  category: undefined,
+  store: undefined,
+  brand: undefined,
+  minPrice: undefined,
+  maxPrice: undefined,
+  inStockOnly: false,
+  multiStoreOnly: false,
+  sort: DEFAULT_SORT,
+};
+
+function readInitialFilters(): UrlFilterState {
+  if (typeof window === "undefined") return EMPTY_URL_FILTERS;
+  const params = new URLSearchParams(window.location.search);
+  const sortParam = params.get("sort");
+  const categoryParam = params.get("category");
+  const minPrice = Number.parseFloat(params.get("minPrice") ?? "");
+  const maxPrice = Number.parseFloat(params.get("maxPrice") ?? "");
+  return {
+    q: params.get("q") ?? "",
+    category:
+      categoryParam &&
+      (PRODUCT_CATEGORIES as readonly string[]).includes(categoryParam)
+        ? (categoryParam as ProductCategory)
+        : undefined,
+    store: params.get("store") ?? undefined,
+    brand: params.get("brand") ?? undefined,
+    minPrice: Number.isFinite(minPrice) && minPrice > 0 ? minPrice : undefined,
+    maxPrice: Number.isFinite(maxPrice) && maxPrice > 0 ? maxPrice : undefined,
+    inStockOnly: params.get("inStockOnly") === "true",
+    multiStoreOnly: params.get("multiStoreOnly") === "true",
+    sort:
+      sortParam && (VALID_SORTS as readonly string[]).includes(sortParam)
+        ? (sortParam as SortOption)
+        : DEFAULT_SORT,
+  };
+}
+
+/** URL compartible con el estado completo de filtros (WhatsApp abre igual). */
+function buildShareUrl(state: UrlSyncState): string {
+  const current = new URL(window.location.href);
+  const params = new URLSearchParams();
+  for (const [key, value] of current.searchParams.entries()) {
+    if (!MANAGED_URL_KEYS.includes(key)) {
+      params.set(key, value);
     }
   }
-
-  if (updates.vista !== undefined) {
-    if (updates.vista === "catalogo") {
-      url.searchParams.delete("vista");
-    } else {
-      url.searchParams.set("vista", updates.vista);
-    }
-  }
-
-  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  if (state.q.trim()) params.set("q", state.q.trim());
+  if (state.category) params.set("category", state.category);
+  if (state.store) params.set("store", state.store);
+  if (state.brand) params.set("brand", state.brand);
+  if (state.minPrice !== undefined) params.set("minPrice", String(state.minPrice));
+  if (state.maxPrice !== undefined) params.set("maxPrice", String(state.maxPrice));
+  if (state.inStockOnly) params.set("inStockOnly", "true");
+  if (state.multiStoreOnly) params.set("multiStoreOnly", "true");
+  if (state.sort !== DEFAULT_SORT) params.set("sort", state.sort);
+  if (state.activeView !== "catalogo") params.set("vista", state.activeView);
+  if (state.selectedProductSlug) params.set("producto", state.selectedProductSlug);
+  const qs = params.toString();
+  return `${current.pathname}${qs ? `?${qs}` : ""}${current.hash}`;
 }
 
 export interface GuestFavoriteSummary {
@@ -157,7 +241,19 @@ interface FilterState {
   clearCompare: () => void;
 }
 
-export const useFilterStore = create<FilterState>((set, get) => ({
+export const useFilterStore = create<FilterState>((set, get) => {
+  const writeUrl = (mode: "replace" | "push") => {
+    if (typeof window === "undefined") return;
+    const url = buildShareUrl(get());
+    if (mode === "push") {
+      // pushState: el botón Atrás cierra el detalle en lugar de salir del sitio
+      window.history.pushState({}, "", url);
+    } else {
+      window.history.replaceState({}, "", url);
+    }
+  };
+
+  return {
   activeView: readInitialView(),
   selectedProductSlug: readInitialProductSlug(),
   aiOpen: false,
@@ -168,15 +264,7 @@ export const useFilterStore = create<FilterState>((set, get) => ({
   compareModalOpen: false,
   mobileFiltersOpen: false,
 
-  q: "",
-  category: undefined,
-  store: undefined,
-  brand: undefined,
-  minPrice: undefined,
-  maxPrice: undefined,
-  inStockOnly: false,
-  multiStoreOnly: false,
-  sort: "best-savings",
+  ...readInitialFilters(),
   page: 1,
   limit: 24,
 
@@ -186,24 +274,26 @@ export const useFilterStore = create<FilterState>((set, get) => ({
   compareItems: loadStoredArray<ProductSummaryDTO>(COMPARE_KEY).slice(0, 3),
 
   setActiveView: (view) => {
-    syncUrlParams({ vista: view });
     set({ activeView: view });
+    writeUrl("replace");
   },
 
   openProduct: (slug) => {
-    syncUrlParams({ producto: slug });
     set({ selectedProductSlug: slug });
+    writeUrl("push");
   },
 
   closeProduct: () => {
-    syncUrlParams({ producto: null });
     set({ selectedProductSlug: null });
+    writeUrl("replace");
   },
 
   syncFromLocation: () => {
     set({
       selectedProductSlug: readInitialProductSlug(),
       activeView: readInitialView(),
+      ...readInitialFilters(),
+      page: 1,
     });
   },
 
@@ -223,29 +313,52 @@ export const useFilterStore = create<FilterState>((set, get) => ({
   setCompareModalOpen: (open) => set({ compareModalOpen: open }),
   setMobileFiltersOpen: (open) => set({ mobileFiltersOpen: open }),
 
-  setQuery: (q) => set({ q, page: 1 }),
-  setCategory: (category) => set({ category, page: 1 }),
-  setStore: (store) => set({ store, page: 1 }),
-  setBrand: (brand) => set({ brand, page: 1 }),
-  setPriceRange: (minPrice, maxPrice) => set({ minPrice, maxPrice, page: 1 }),
-  setInStockOnly: (inStockOnly) => set({ inStockOnly, page: 1 }),
-  setMultiStoreOnly: (multiStoreOnly) => set({ multiStoreOnly, page: 1 }),
-  setSort: (sort) => set({ sort, page: 1 }),
+  setQuery: (q) => {
+    const trimmed = q.trim();
+    const currentSort = get().sort;
+    // Con búsqueda activa el orden honesto es Relevancia; al limpiarla volvemos al comparado multi-tienda
+    const sort: SortOption = trimmed
+      ? "relevance"
+      : currentSort === "relevance"
+        ? DEFAULT_SORT
+        : currentSort;
+    set({ q, sort, page: 1 });
+    writeUrl("replace");
+  },
+  setCategory: (category) => {
+    set({ category, page: 1 });
+    writeUrl("replace");
+  },
+  setStore: (store) => {
+    set({ store, page: 1 });
+    writeUrl("replace");
+  },
+  setBrand: (brand) => {
+    set({ brand, page: 1 });
+    writeUrl("replace");
+  },
+  setPriceRange: (minPrice, maxPrice) => {
+    set({ minPrice, maxPrice, page: 1 });
+    writeUrl("replace");
+  },
+  setInStockOnly: (inStockOnly) => {
+    set({ inStockOnly, page: 1 });
+    writeUrl("replace");
+  },
+  setMultiStoreOnly: (multiStoreOnly) => {
+    set({ multiStoreOnly, page: 1 });
+    writeUrl("replace");
+  },
+  setSort: (sort) => {
+    set({ sort, page: 1 });
+    writeUrl("replace");
+  },
   setPage: (page) => set({ page }),
 
-  resetFilters: () =>
-    set({
-      q: "",
-      category: undefined,
-      store: undefined,
-      brand: undefined,
-      minPrice: undefined,
-      maxPrice: undefined,
-      inStockOnly: false,
-      multiStoreOnly: false,
-      sort: "best-savings",
-      page: 1,
-    }),
+  resetFilters: () => {
+    set({ ...EMPTY_URL_FILTERS, page: 1 });
+    writeUrl("replace");
+  },
 
   toggleFavorite: (slug) => {
     const current = get().favoriteSlugs;
@@ -357,4 +470,5 @@ export const useFilterStore = create<FilterState>((set, get) => ({
     saveStoredArray(COMPARE_KEY, []);
     set({ compareItems: [], compareModalOpen: false });
   },
-}));
+  };
+});

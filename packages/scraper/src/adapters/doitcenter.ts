@@ -247,7 +247,8 @@ async function fetchCategoryJson(
   base: string,
   buildId: string,
   path: string,
-  page: number
+  page: number,
+  signal?: AbortSignal
 ): Promise<DoitNextData | null> {
   const cleanPath = path.replace(/^\/+/, "");
   const url = `${base}/_next/data/${buildId}/${cleanPath}.json${page > 1 ? `?page=${page}` : ""}`;
@@ -256,6 +257,7 @@ async function fetchCategoryJson(
       timeoutMs: 25_000,
       retries: 0,
       headers: { Accept: "application/json" },
+      signal,
     });
   } catch {
     return null;
@@ -265,7 +267,8 @@ async function fetchCategoryJson(
 async function fetchCategoryHtml(
   base: string,
   path: string,
-  page: number
+  page: number,
+  signal?: AbortSignal
 ): Promise<DoitNextData | null> {
   const url = `${base}${path}${page > 1 ? `?page=${page}` : ""}`;
   try {
@@ -273,6 +276,7 @@ async function fetchCategoryHtml(
       timeoutMs: 30_000,
       retries: 1,
       headers: BROWSER_HEADERS,
+      signal,
     });
     return extractNextData(html);
   } catch {
@@ -323,11 +327,14 @@ export function createDoitCenterAdapter(store: PanamaStoreConfig): StoreAdapter 
       const pools = await mapWithConcurrency(categories, fullMode ? 2 : 3, async (category) => {
         const pool: RawScrapedItem[] = [];
         for (let page = 1; page <= pagesPerCategory; page += 1) {
-          let data = buildId ? await fetchCategoryJson(base, buildId, category.path, page) : null;
+          if (context.signal?.aborted) break;
+          let data = buildId
+            ? await fetchCategoryJson(base, buildId, category.path, page, context.signal)
+            : null;
 
           if (!data || productsFromNextData(data).length === 0) {
             // Build id rotated or data route blocked: read the SSR HTML instead.
-            data = await fetchCategoryHtml(base, category.path, page);
+            data = await fetchCategoryHtml(base, category.path, page, context.signal);
             if (data?.buildId) buildId = data.buildId;
           }
 

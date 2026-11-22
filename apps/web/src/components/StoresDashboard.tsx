@@ -96,14 +96,15 @@ export function StoresDashboard() {
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-[#525866]">
               Rastreamos automáticamente precios reales en USD de los principales comercios
-              de tecnología, cómputo y línea blanca en Panamá cada <strong>3 días</strong>,
-              con verificación de enlaces directos y registro histórico.
+              de tecnología, cómputo y línea blanca en Panamá con un{" "}
+              <strong>barrido diario (08:00 UTC)</strong>, con verificación de enlaces
+              directos y registro histórico.
             </p>
           </div>
 
           <div className="inline-flex items-center gap-2 rounded-xl border border-[#A7F3D0] bg-[#ECFDF5] px-3.5 py-2 text-xs font-semibold text-[#047857]">
             <ShieldCheck className="h-4 w-4 shrink-0" />
-            <span>Sincronización interna automática · Cada 3 días</span>
+            <span>Sincronización interna automática · Barrido diario</span>
           </div>
         </div>
       </BlurFade>
@@ -116,7 +117,7 @@ export function StoresDashboard() {
           </span>
           <div>
             <p className="text-sm font-bold text-[#111315]">
-              Frecuencia automatizada: cada 3 días (08:00 UTC)
+              Frecuencia automatizada: barrido diario (08:00 UTC)
             </p>
             <p className="mt-0.5 text-xs text-[#525866]">
               Motor híbrido: adaptadores Shopify JSON para Multimax, Rodelag, Almacenes

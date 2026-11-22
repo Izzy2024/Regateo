@@ -1,16 +1,16 @@
 name: Scheduled Scrape
 
-# RegateoApp · scraping de tiendas panameñas cada 3 días.
-# 08:00 UTC = 03:00 hora de Panamá. Ajusta el cron si cambias SCRAPE_INTERVAL_DAYS
-# (1..7 días): '0 8 */3 * *' → cada 3 días; '0 8 */5 * *' → cada 5 días.
+# RegateoApp · barrido diario de las 8 tiendas panameñas activas.
+# 08:00 UTC = 03:00 hora de Panamá. El pipeline despacha además las alertas de
+# precio reales después de cada barrido.
 
 on:
   schedule:
-    - cron: "0 8 */3 * *"
+    - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
       stores:
-        description: "Tiendas separadas por coma (all = las 6)"
+        description: "Tiendas separadas por coma (all = las 8 activas)"
         required: false
         default: "all"
         type: string
@@ -28,7 +28,7 @@ on:
           - direct
           - api
       use_firecrawl:
-        description: "Usar Firecrawl para Panafoto / Foto Sonido / Audiofoto"
+        description: "Permitir Firecrawl como fallback de renderizado"
         required: false
         default: true
         type: boolean
@@ -155,7 +155,7 @@ jobs:
             echo "- Tiendas: \`${STORES}\`"
             echo "- Máx por tienda: \`${MAX_PER_STORE}\`"
             echo "- Firecrawl: \`${USE_FIRECRAWL}\`"
-            echo "- Intervalo: cada \`${SCRAPE_INTERVAL_DAYS}\` día(s)"
+            echo "- Cron: diario (08:00 UTC / 03:00 Panamá)"
             echo ""
             if [ -f scrape-result.json ]; then
               echo '```json'

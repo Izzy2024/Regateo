@@ -33,12 +33,12 @@ import {
 import { motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { useUserSpace } from "@/hooks/useUserSpace";
+import { buildOutboundUrl } from "@/lib/api";
 import {
   cn,
   formatRelativeEs,
   formatUsd,
   getCategoryShortLabel,
-  sanitizeExternalUrl,
 } from "@/lib/utils";
 import { useFilterStore } from "@/store/useFilterStore";
 import { CategoryIcon } from "./CategoryIcon";
@@ -132,7 +132,11 @@ function FavoriteCard({
   const delta = fav.priceChangeSinceSavedCents;
   const dropped = delta < 0;
   const increased = delta > 0;
-  const bestStoreUrl = sanitizeExternalUrl(product.bestStore?.url);
+  const bestStoreUrl = buildOutboundUrl(
+    product.bestStore?.listingId,
+    product.bestStore?.url,
+    "account"
+  );
 
   const handleQuickAdd = async (listId: string) => {
     setAddingListId(listId);
@@ -578,7 +582,11 @@ function ShoppingListCard({
       ) : (
         <div className="mt-4 divide-y divide-[#EFECE5] rounded-xl border border-[#EFECE5]">
           {list.items.map((item) => {
-            const safeUrl = sanitizeExternalUrl(item.product.bestStore?.url);
+            const safeUrl = buildOutboundUrl(
+              item.product.bestStore?.listingId,
+              item.product.bestStore?.url,
+              "account"
+            );
             const subtotal = item.product.bestPriceCents * item.quantity;
             return (
               <div
@@ -688,7 +696,11 @@ function AlertCard({
   const currentCents = alert.product.currentBestPriceCents;
   const targetCents = alert.targetPriceCents;
   const reached = alert.reachedTarget;
-  const safeUrl = sanitizeExternalUrl(alert.product.bestStoreUrl);
+  const safeUrl = buildOutboundUrl(
+    undefined,
+    alert.product.bestStoreUrl,
+    "account"
+  );
 
   const gapCents =
     currentCents !== null ? Math.max(0, currentCents - targetCents) : null;

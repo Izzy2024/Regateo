@@ -23,6 +23,8 @@ export interface FetchOptions {
   headers?: Record<string, string>;
   /** HTTP statuses that must not be retried (defaults to 4xx except 408/429). */
   stopOnStatus?: number[];
+  /** External cancellation (pipeline store timeout). */
+  signal?: AbortSignal;
 }
 
 export class HttpError extends Error {
@@ -36,12 +38,15 @@ export class HttpError extends Error {
 }
 
 export async function fetchText(url: string, options: FetchOptions = {}): Promise<string> {
-  const { timeoutMs = 25_000, retries = 2, headers, stopOnStatus } = options;
+  const { timeoutMs = 25_000, retries = 2, headers, stopOnStatus, signal } = options;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (signal?.aborted) throw new Error(`Solicitud cancelada: ${url}`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const response = await fetch(url, {
         headers: { ...BROWSER_HEADERS, ...headers },
@@ -65,6 +70,7 @@ export async function fetchText(url: string, options: FetchOptions = {}): Promis
       }
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
 
     if (attempt < retries) await sleep(600 * (attempt + 1) ** 2);
@@ -90,12 +96,15 @@ export async function postJson<T>(
   payload: unknown,
   options: FetchOptions = {}
 ): Promise<T> {
-  const { timeoutMs = 30_000, retries = 1, headers } = options;
+  const { timeoutMs = 30_000, retries = 1, headers, signal } = options;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (signal?.aborted) throw new Error(`Solicitud cancelada: ${url}`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -119,6 +128,7 @@ export async function postJson<T>(
       }
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
     if (attempt < retries) await sleep(700 * (attempt + 1));
   }

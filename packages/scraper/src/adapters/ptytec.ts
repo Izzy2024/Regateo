@@ -102,11 +102,12 @@ function categoryScore(name: string): number {
   return index === -1 ? -1 : PRIORITY_KEYWORDS.length - index;
 }
 
-async function apiGet<T>(path: string): Promise<T | null> {
+async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T | null> {
   try {
     const payload = await fetchJson<PtytecResponse<T>>(`${apiBase()}/${path.replace(/^\/+/, "")}`, {
       timeoutMs: 25_000,
       retries: 1,
+      signal,
       headers: {
         Accept: "application/json",
         Referer: "https://www.ptytec.com/",
@@ -195,18 +196,20 @@ async function pageFullCatalog(
     }
   };
 
-  const first = await apiGet<PtytecProductList>("product/search?page=1");
+  const first = await apiGet<PtytecProductList>("product/search?page=1", context.signal);
   ingestList(first);
   const lastPage = first?.meta?.last_page ?? 1;
   const total = first?.meta?.total ?? collected.size;
 
   let page = 2;
-  while (page <= lastPage && collected.size < maxItems) {
+  while (page <= lastPage && collected.size < maxItems && !context.signal?.aborted) {
     const batch = Array.from({ length: FULL_CONCURRENCY }, (_, index) => page + index).filter(
       (candidate) => candidate <= lastPage
     );
     const lists = await Promise.all(
-      batch.map((candidate) => apiGet<PtytecProductList>(`product/search?page=${candidate}`))
+      batch.map((candidate) =>
+        apiGet<PtytecProductList>(`product/search?page=${candidate}`, context.signal)
+      )
     );
     for (const list of lists) ingestList(list);
 
@@ -253,8 +256,10 @@ export function createPtytecAdapter(store: PanamaStoreConfig): StoreAdapter {
         const pools = await mapWithConcurrency(categories, 3, async (category) => {
           const pool: RawScrapedItem[] = [];
           for (let page = 1; page <= pagesPerCategory; page += 1) {
+            if (context.signal?.aborted) break;
             const list = await apiGet<PtytecProductList>(
-              `product/search?category=${category.id}&page=${page}`
+              `product/search?category=${category.id}&page=${page}`,
+              context.signal
             );
             const products = list?.products ?? [];
             if (products.length === 0) break;

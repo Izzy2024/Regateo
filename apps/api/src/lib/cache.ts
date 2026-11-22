@@ -118,20 +118,43 @@ export async function cacheGetOrSet<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Rate limiting (sliding window). Upstash en producción, memoria en dev.
+// Rate limiting (sliding window por bucket). Instancias Upstash en caché por
+// combinación `${bucket}:${limit}:${windowSec}` (antes: una sola fija 30/1m).
 // ---------------------------------------------------------------------------
-const ratelimit: RatelimitType | null =
-  cacheBackend === "upstash" && redis
-    ? new Ratelimit({
-        redis,
-        limiter: Ratelimit.slidingWindow(30, "1 m"),
-        prefix: "regateoapp-rl",
-      })
-    : null;
+const ratelimitInstances = new Map<string, RatelimitType>();
 
-function clientIdentifier(c: { req: { header: (name: string) => string | undefined } }): string {
-  const forwarded = c.req.header("x-forwarded-for");
-  return forwarded?.split(",")[0]?.trim() || "local";
+function getRatelimit(limit: number, windowSec: number): RatelimitType | null {
+  if (!redis) return null;
+  const key = `${limit}:${windowSec}`;
+  let instance = ratelimitInstances.get(key);
+  if (!instance) {
+    instance = new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(limit, `${windowSec} s`),
+      prefix: "regateoapp-rl",
+    });
+    ratelimitInstances.set(key, instance);
+  }
+  return instance;
+}
+
+/**
+ * IP de confianza: cf-connecting-ip > x-real-ip; x-forwarded-for SOLO si
+ * TRUST_PROXY=true (evita spoofing trivial del header en despliegues sin
+ * proxy de confianza).
+ */
+export function clientIpFromHeaders(headers: {
+  [key: string]: string | undefined;
+}): string {
+  const cdnIp = headers["cf-connecting-ip"]?.trim();
+  if (cdnIp) return cdnIp;
+  const realIp = headers["x-real-ip"]?.trim();
+  if (realIp) return realIp;
+  if (process.env.TRUST_PROXY === "true") {
+    const forwarded = headers["x-forwarded-for"]?.split(",")[0]?.trim();
+    if (forwarded) return forwarded;
+  }
+  return "local";
 }
 
 export interface RateLimitOptions {
@@ -152,13 +175,18 @@ export function rateLimitMiddleware(
   const windowMs = windowSec * 1000;
 
   return async (c, next) => {
-    const identifier = `${bucket}:${clientIdentifier(c)}`;
+    const identifier = `${bucket}:${clientIpFromHeaders({
+      "cf-connecting-ip": c.req.header("cf-connecting-ip") ?? undefined,
+      "x-real-ip": c.req.header("x-real-ip") ?? undefined,
+      "x-forwarded-for": c.req.header("x-forwarded-for") ?? undefined,
+    })}`;
     try {
-      if (ratelimit) {
-        const { success } = await ratelimit.limit(identifier);
+      const limiter = getRatelimit(limit, windowSec);
+      if (limiter) {
+        const { success } = await limiter.limit(identifier);
         if (!success) {
           return c.json(
-            { error: "rate_limited", message: "Demasiadas solicitudes, probá de nuevo en un momento." },
+            { error: "rate_limited", message: "Demasiadas solicitudes, prueba de nuevo en un momento." },
             429
           );
         }

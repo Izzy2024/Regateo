@@ -23,6 +23,8 @@ export interface RawScrapedItem {
   /** Set false when the store SKU is not a manufacturer model code. */
   trustSkuModel?: boolean;
   sku?: string | null;
+  /** GTIN/EAN/UPC supplied by the store (Shopify `variant.barcode`). */
+  gtin?: string | null;
   category?: ProductCategory;
   productType?: string | null;
   priceCents: number;
@@ -39,6 +41,8 @@ export interface AdapterContext {
   maxPerStore: number;
   /** When false, adapters must avoid any Firecrawl call and use direct HTTP only. */
   useFirecrawl: boolean;
+  /** Aborts the adapter when the store-level timeout fires. */
+  signal?: AbortSignal;
   log: (message: string) => void;
 }
 

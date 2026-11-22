@@ -258,13 +258,15 @@ export function parseYoytecHtml(
 
 async function fetchYoytecPage(
   store: PanamaStoreConfig,
-  url: string
+  url: string,
+  signal?: AbortSignal
 ): Promise<string | null> {
   try {
     return await fetchText(url, {
       timeoutMs: 30_000,
       retries: 1,
       headers: BROWSER_HEADERS,
+      signal,
     });
   } catch {
     return null;
@@ -287,11 +289,11 @@ async function pageYoytecShop(
   let emptyPages = 0;
   let noNewRounds = 0;
 
-  while (collected.length < maxItems && page <= MAX_FULL_PAGES) {
+  while (collected.length < maxItems && page <= MAX_FULL_PAGES && !context.signal?.aborted) {
     const pages = Array.from({ length: FULL_CONCURRENCY }, (_, index) => page + index);
     const results = await Promise.all(
       pages.map(async (currentPage) => {
-        const html = await fetchYoytecPage(store, `${base}/shop?page=${currentPage}`);
+        const html = await fetchYoytecPage(store, `${base}/shop?page=${currentPage}`, context.signal);
         if (!html) return null;
         return {
           // Real product forms only: the theme CSS/JS also contains the class name.
@@ -405,8 +407,9 @@ export function createYoytecAdapter(store: PanamaStoreConfig): StoreAdapter {
               Math.ceil(context.maxPerStore / categories.length / SHOP_PAGE_SIZE) + 1
             );
             for (let page = 1; page <= pages; page += 1) {
+              if (context.signal?.aborted) break;
               const url = `${base}/shop/category/${category.id}?page=${page}`;
-              const html = await fetchYoytecPage(store, url);
+              const html = await fetchYoytecPage(store, url, context.signal);
               if (!html) break;
               const parsed = parseYoytecHtml(html, store, SHOP_PAGE_SIZE);
               if (parsed.length === 0) break;

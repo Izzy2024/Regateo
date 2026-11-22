@@ -64,7 +64,7 @@ export function PriceHistoryChart({ history }: PriceHistoryChartProps) {
           Historial en construcción
         </p>
         <p className="mt-1 max-w-sm text-xs text-[#525866]">
-          Cada barrido automático cada 3 días registra un nuevo punto de precio para
+          Cada barrido automático diario registra un nuevo punto de precio para
           detectar subidas y bajas reales.
         </p>
       </div>

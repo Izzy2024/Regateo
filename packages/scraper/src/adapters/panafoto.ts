@@ -147,9 +147,14 @@ function grapqhlUrl(store: PanamaStoreConfig): string {
 async function graphql<T>(
   store: PanamaStoreConfig,
   query: string,
-  variables?: Record<string, unknown>
+  variables?: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<T> {
-  const payload = await postJson<T>(grapqhlUrl(store), { query, variables }, { retries: 1 });
+  const payload = await postJson<T>(
+    grapqhlUrl(store),
+    { query, variables },
+    { retries: 1, signal }
+  );
   const errors = (payload as { errors?: Array<{ message?: string }> }).errors;
   if (errors && errors.length > 0) {
     throw new Error(`GraphQL Panafoto: ${errors.map((error) => error.message).join("; ")}`);
@@ -309,13 +314,16 @@ async function scrapeFullCatalog(
   let totalPages = 1;
 
   do {
+    if (context.signal?.aborted) break;
     let response: GraphqlProductsResponse | null = null;
     for (let attempt = 0; attempt < 3 && !response; attempt += 1) {
       try {
-        response = await graphql<GraphqlProductsResponse>(store, GRAPHQL_FULL_QUERY, {
-          page,
-          pageSize: FULL_PAGE_SIZE,
-        });
+        response = await graphql<GraphqlProductsResponse>(
+          store,
+          GRAPHQL_FULL_QUERY,
+          { page, pageSize: FULL_PAGE_SIZE },
+          context.signal
+        );
       } catch (error) {
         context.log(
           `  panafoto catálogo página ${page} falló (intento ${attempt + 1}): ${(error as Error).message}`
@@ -362,11 +370,13 @@ async function scrapeWithGraphql(
   const perCategoryItems = await mapWithConcurrency(categories, 3, async (category) => {
     const collected: RawScrapedItem[] = [];
     for (let page = 1; page <= maxPages; page += 1) {
+      if (context.signal?.aborted) break;
       try {
         const response = await graphql<GraphqlProductsResponse>(
           store,
           GRAPHQL_PRODUCTS_QUERY,
-          { uid: category.uid, page, pageSize }
+          { uid: category.uid, page, pageSize },
+          context.signal
         );
         const items = response.data?.products?.items ?? [];
         if (items.length === 0) break;
@@ -427,7 +437,7 @@ async function scrapeWithHtml(
     }
     if (!html) {
       try {
-        html = await fetchText(url, { timeoutMs: 25_000, retries: 1 });
+        html = await fetchText(url, { timeoutMs: 25_000, retries: 1, signal: context.signal });
       } catch (error) {
         context.log(`  panafoto${path} HTML falló: ${(error as Error).message}`);
         continue;
@@ -455,10 +465,11 @@ export function createPanafotoAdapter(store: PanamaStoreConfig): StoreAdapter {
     async searchByTerm(term, options = {}) {
       const pageSize = Math.min(10, Math.max(2, options.limit ?? 4));
       try {
-        const response = await graphql<GraphqlProductsResponse>(store, GRAPHQL_SEARCH_QUERY, {
-          term,
-          pageSize,
-        });
+        const response = await graphql<GraphqlProductsResponse>(
+          store,
+          GRAPHQL_SEARCH_QUERY,
+          { term, pageSize }
+        );
         const items = response.data?.products?.items ?? [];
         return items
           .map((entry) => mapGraphqlItem(entry, store))

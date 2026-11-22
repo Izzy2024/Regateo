@@ -1,5 +1,6 @@
--- Run on local PostgreSQL, Neon, or Supabase for <5ms ILIKE search at 20,000+ products
+-- Run on local PostgreSQL, Neon, or Supabase for <5ms ILIKE / unaccent search at 20,000+ products
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
 
 CREATE INDEX IF NOT EXISTS products_canonical_name_trgm_idx
   ON products USING gin (canonical_name gin_trgm_ops);

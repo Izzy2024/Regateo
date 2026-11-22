@@ -1,5 +1,14 @@
 import { PANAMA_STORES, type StoreStatusDTO } from "@regateo/shared";
-import { ArrowRight, Clock, Search, Sparkles, Store, Tag, X } from "lucide-react";
+import {
+  ArrowRight,
+  Clock,
+  Layers,
+  Search,
+  Sparkles,
+  Store,
+  Tag,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn, formatRelativeEs } from "@/lib/utils";
 import { useFilterStore } from "@/store/useFilterStore";
@@ -33,6 +42,7 @@ interface HeroSearchProps {
   lastScrapedAt: string | null;
   isLoadingStats?: boolean;
   stores?: StoreStatusDTO[];
+  comparableCount?: number | null;
 }
 
 export function HeroSearch({
@@ -41,6 +51,7 @@ export function HeroSearch({
   lastScrapedAt,
   isLoadingStats,
   stores,
+  comparableCount,
 }: HeroSearchProps) {
   const q = useFilterStore((s) => s.q);
   const selectedStore = useFilterStore((s) => s.store);
@@ -234,8 +245,24 @@ export function HeroSearch({
                     <NumberTicker value={totalProducts} />
                   )}
                 </span>
-                <span>productos comparables</span>
+                <span>productos monitoreados</span>
               </div>
+
+              {typeof comparableCount === "number" && comparableCount > 0 ? (
+                <>
+                  <span className="hidden h-3.5 w-px bg-[#E7E5DF] sm:inline-block" />
+
+                  <div className="inline-flex items-center gap-1.5">
+                    <Layers className="h-3.5 w-3.5 text-[#059669]" strokeWidth={2} />
+                    <span className="font-semibold tabular-nums text-[#111315]">
+                      {isLoadingStats
+                        ? "..."
+                        : comparableCount.toLocaleString("en-US")}
+                    </span>
+                    <span>comparados en 2+ tiendas</span>
+                  </div>
+                </>
+              ) : null}
 
               <span className="hidden h-3.5 w-px bg-[#E7E5DF] sm:inline-block" />
 
@@ -246,7 +273,7 @@ export function HeroSearch({
                   <strong className="font-semibold text-[#111315]">
                     {lastScrapedAt
                       ? formatRelativeEs(lastScrapedAt)
-                      : "Actualización automática cada 3 días"}
+                      : "Barrido diario automático (08:00 UTC)"}
                   </strong>
                 </span>
               </div>

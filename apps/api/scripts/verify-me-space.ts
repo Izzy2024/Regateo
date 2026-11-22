@@ -192,7 +192,7 @@ const alertRes = await app.request("/api/alerts", {
   body: JSON.stringify({ productId: p3.id, email: TEST_EMAIL, targetPriceCents: Math.round(p3.bestPriceCents * 0.9) }),
 });
 const alertBody = (await alertRes.json()) as any;
-check("POST /api/alerts (con sesión) 201", alertRes.status === 201);
+check("POST /api/alerts (con sesión) 201 + verified (doble opt-in)", alertRes.status === 201 && alertBody.alert.verified === true, alertBody);
 const [alertRow] = await db
   .select({ userId: sql<string | null>`user_id` })
   .from(sql`price_alerts`)
@@ -206,7 +206,14 @@ const guestAlertRes = await app.request("/api/alerts", {
   body: JSON.stringify({ productId: p2.id, email: TEST_EMAIL, targetPriceCents: Math.round(p2.bestPriceCents * 0.8) }),
 });
 const guestAlert = (await guestAlertRes.json()) as any;
-check("alerta invitada (sin sesión) 201", guestAlertRes.status === 201);
+check(
+  "alerta invitada 201 + doble opt-in (requiresConfirmation, verified=false)",
+  guestAlertRes.status === 201 &&
+    guestAlert.requiresConfirmation === true &&
+    guestAlert.alert.verified === false &&
+    typeof guestAlert.alert.id === "string",
+  guestAlert
+);
 
 // 7) Overview con todo -------------------------------------------------------
 const overviewRes = await app.request("/api/me/overview", { headers: authHeaders });

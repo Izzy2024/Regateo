@@ -8,15 +8,28 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { logger } from "./observability";
+import { clientIpFromHeaders } from "./cache";
 
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY?.trim() || undefined;
 const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY?.trim() || undefined;
 const TURNSTILE_VERIFY_URL =
   "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
-const HMAC_SECRET =
-  process.env.BETTER_AUTH_SECRET ??
+const DEV_SECRET_PLACEHOLDER =
   "dev-regateoapp-super-secret-key-change-in-production-32chars";
+
+/** Fail-fast (auditoría #7): la firma HMAC jamás usa un placeholder en prod. */
+function resolveCaptchaSecret(): string {
+  const secret = process.env.BETTER_AUTH_SECRET;
+  if (process.env.NODE_ENV === "production" && (!secret || secret === DEV_SECRET_PLACEHOLDER)) {
+    throw new Error(
+      "[RegateoApp] FATAL: BETTER_AUTH_SECRET falta o sigue siendo el placeholder de desarrollo. Configura un secreto real antes de desplegar."
+    );
+  }
+  return secret ?? DEV_SECRET_PLACEHOLDER;
+}
+
+const HMAC_SECRET = resolveCaptchaSecret();
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
@@ -222,8 +235,11 @@ export const requireCaptchaMiddleware: MiddlewareHandler = async (c, next) => {
   const token = c.req.header("x-captcha-token");
   const answer = c.req.header("x-captcha-answer");
   const honeypot = c.req.header("x-captcha-hp");
-  const remoteIp =
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+  const remoteIp = clientIpFromHeaders({
+    "cf-connecting-ip": c.req.header("cf-connecting-ip") ?? undefined,
+    "x-real-ip": c.req.header("x-real-ip") ?? undefined,
+    "x-forwarded-for": c.req.header("x-forwarded-for") ?? undefined,
+  });
 
   if (!token) {
     return c.json(CAPTCHA_FAILED_RESPONSE, 403);

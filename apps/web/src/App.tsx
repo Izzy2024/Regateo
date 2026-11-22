@@ -67,10 +67,11 @@ const FOOTER_LINKS: Array<{ view: AppView; label: string }> = [
 ];
 
 const SORT_OPTIONS: Array<{ value: SortOption; label: string }> = [
+  { value: "most-stores", label: "Comparables en 2+ tiendas" },
+  { value: "relevance", label: "Relevancia" },
   { value: "best-savings", label: "Mayor ahorro" },
   { value: "price-asc", label: "Menor precio" },
   { value: "price-desc", label: "Mayor precio" },
-  { value: "most-stores", label: "Más tiendas" },
   { value: "recent", label: "Más recientes" },
 ];
 
@@ -221,6 +222,7 @@ export function App() {
               lastScrapedAt={data?.meta.lastScrapedAt ?? null}
               isLoadingStats={productsQuery.isLoading && !data}
               stores={storesMetaQuery.data?.stores}
+              comparableCount={data?.meta.comparableCount ?? null}
             />
 
             <CategoryRibbon

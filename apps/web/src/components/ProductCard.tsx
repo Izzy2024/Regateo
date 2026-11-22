@@ -9,12 +9,12 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useUserSpace } from "@/hooks/useUserSpace";
+import { buildOutboundUrl } from "@/lib/api";
 import {
   cn,
   formatUsd,
   formatUsdWhole,
   getCategoryShortLabel,
-  sanitizeExternalUrl,
 } from "@/lib/utils";
 import { useFilterStore } from "@/store/useFilterStore";
 import { CategoryIcon } from "./CategoryIcon";
@@ -55,10 +55,23 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
   );
   const topListings = sortedListings.slice(0, 3);
   const bestListing = sortedListings[0] ?? null;
-  const bestStoreUrl = sanitizeExternalUrl(
-    product.bestStore?.url ?? bestListing?.url
+  const bestStoreUrl = buildOutboundUrl(
+    product.bestStore?.listingId ?? bestListing?.id,
+    product.bestStore?.url ?? bestListing?.url,
+    "card"
   );
-  const hasSavings = product.savingsCents >= 100 && product.savingsPercent >= 1;
+  // Ahorro real entre tiendas: exige 2+ tiendas y un porcentaje creíble (nunca >99%)
+  const hasCrossStoreSavings =
+    product.storeCount >= 2 &&
+    product.savingsCents > 0 &&
+    product.savingsPercent <= 99;
+  // Descuento anunciado por la tienda ganadora sobre su propio precio "antes" (tope 65%)
+  const hasStoreDiscount =
+    product.storeCount <= 1 &&
+    (product.storeDiscountCents ?? 0) > 0 &&
+    (product.storeDiscountPercent ?? 0) > 0 &&
+    (product.storeDiscountPercent ?? 0) <= 65;
+  const isOutOfStock = product.inStockCount === 0;
 
   return (
     <article
@@ -106,14 +119,21 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
               #1 Oferta
             </Badge>
           ) : null}
-          {hasSavings ? (
+          {isOutOfStock ? (
+            <Badge variant="muted">Agotado</Badge>
+          ) : hasCrossStoreSavings ? (
             <Badge variant="savings" className="font-mono tabular-nums">
-              -{formatUsdWhole(product.savingsCents)} ({product.savingsPercent}%)
+              Ahorras {formatUsdWhole(product.savingsCents)} (-
+              {product.savingsPercent}%) entre tiendas
             </Badge>
           ) : product.storeCount >= 2 ? (
             <Badge variant="default" className="bg-white/95">
               <Layers className="h-3 w-3 text-[#059669]" />
               {product.storeCount} tiendas
+            </Badge>
+          ) : hasStoreDiscount ? (
+            <Badge variant="default" className="bg-white/95">
+              Dto. tienda -{product.storeDiscountPercent}%
             </Badge>
           ) : null}
         </div>
@@ -206,13 +226,25 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
           {product.canonicalName}
         </button>
 
-        <div className="mt-3.5 rounded-lg border border-[#A7F3D0] bg-[#ECFDF5] p-3">
+        <div
+          className={cn(
+            "mt-3.5 rounded-lg border p-3",
+            isOutOfStock
+              ? "border-[#D5D2C9] bg-[#F4F3EE]"
+              : "border-[#A7F3D0] bg-[#ECFDF5]"
+          )}
+        >
           <div className="flex items-baseline justify-between gap-2">
             <div>
               <span className="block text-[11px] font-semibold text-[#047857]">
-                Mejor precio verificado
+                {isOutOfStock ? "Agotado · último precio" : "Mejor precio verificado"}
               </span>
-              <span className="font-price text-[22px] leading-tight font-bold text-[#047857]">
+              <span
+                className={cn(
+                  "font-price text-[22px] leading-tight font-bold",
+                  isOutOfStock ? "text-[#525866]" : "text-[#047857]"
+                )}
+              >
                 {formatUsd(product.bestPriceCents)}
               </span>
             </div>
@@ -235,7 +267,8 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
             ) : null}
           </div>
 
-          {product.storeCount >= 2 && product.highestPriceCents > product.bestPriceCents ? (
+          {hasCrossStoreSavings &&
+          product.highestPriceCents > product.bestPriceCents ? (
             <p className="mt-1.5 text-[11px] text-[#065F46]">
               Hasta{" "}
               <span className="font-price font-semibold">
@@ -247,8 +280,15 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
               </span>
             </p>
           ) : (
-            <p className="mt-1 text-[11px] text-[#065F46]">
-              {product.inStockCount > 0 ? "Disponible en tienda" : "Verificar disponibilidad"}
+            <p
+              className={cn(
+                "mt-1 text-[11px]",
+                isOutOfStock ? "text-[#666D7C]" : "text-[#065F46]"
+              )}
+            >
+              {isOutOfStock
+                ? "Sin stock en el último barrido"
+                : "Disponible en tienda"}
             </p>
           )}
         </div>
@@ -256,7 +296,7 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
         {topListings.length > 0 ? (
           <div className="mt-3 divide-y divide-[#EFECE5] border-t border-b border-[#EFECE5]">
             {topListings.map((listing) => {
-              const safeUrl = sanitizeExternalUrl(listing.url);
+              const safeUrl = buildOutboundUrl(listing.id, listing.url, "card");
               return (
                 <div
                   key={listing.id}

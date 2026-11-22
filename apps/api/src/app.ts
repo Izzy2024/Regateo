@@ -2,6 +2,7 @@
 // @regateo/api — Hono app con todas las rutas encadenadas (RPC AppType).
 // ============================================================================
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -12,13 +13,27 @@ import {
   createFavoriteSchema,
   createPriceAlertSchema,
   createShoppingListSchema,
+  formatUsdFromCents,
   productSearchQuerySchema,
+  reportWrongPriceSchema,
   syncFavoritesSchema,
   triggerScrapeSchema,
   updateAlertSchema,
   type ProductSearchQuery,
 } from "@regateo/shared";
-import { db, sql } from "@regateo/db";
+import {
+  db,
+  and,
+  desc,
+  eq,
+  sql,
+  priceAlerts,
+  priceReports,
+  products,
+  storeListings,
+  stores,
+  outboundClicks,
+} from "@regateo/db";
 import "./env";
 import {
   cacheBackend,
@@ -44,7 +59,6 @@ import {
   getProductBySlug,
   getSimilarProductsForSlug,
   getStoresStatus,
-  listAlertsByEmail,
   productExistsById,
   searchProducts,
   type ScrapeRunDTO,
@@ -57,10 +71,12 @@ import {
   deleteUserAlert,
   deleteUserList,
   getUserOverview,
+  listUserAlerts,
   removeItemFromUserList,
   removeUserFavorite,
   syncUserFavorites,
   updateUserAlert,
+  type MeUser,
 } from "./services/user-space";
 
 const webUrl = process.env.WEB_URL ?? "http://localhost:5173";
@@ -69,7 +85,58 @@ const isProduction = process.env.NODE_ENV === "production";
 // ---------------------------------------------------------------------------
 // App base: CORS + logging + errores
 // ---------------------------------------------------------------------------
-const app = new Hono();
+export interface AppEnv {
+  Variables: { meUser: MeUser };
+}
+
+const app = new Hono<AppEnv>();
+
+/** Guardián de sesión para /api/me/* y /api/alerts (auditoría #3/#9): 401 uniforme. */
+const requireUser: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const session = await getSessionUser(c.req.raw.headers);
+  if (!session?.user) {
+    return c.json(
+      { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
+      401
+    );
+  }
+  c.set("meUser", {
+    id: session.user.id,
+    name: session.user.name,
+    email: session.user.email,
+    image: session.user.image ?? null,
+  });
+  await next();
+};
+
+/** Correo de confirmación de alerta vía Resend (fire-and-forget). */
+async function sendAlertConfirmationEmail(
+  to: string,
+  confirmUrl: string,
+  productName: string
+): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  if (!apiKey) return; // sin API key el token queda disponible por el enlace en dev
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from:
+        process.env.EMAIL_FROM ?? "RegateoApp <onboarding@resend.dev>",
+      to,
+      subject: "Confirma tu alerta de precio — RegateoApp",
+      html: `<p>Hola! Solicitaste una alerta de precio para <strong>${productName}</strong>.</p><p>Confírmala aquí: <a href="${confirmUrl}">Activar mi alerta</a></p><p>Si no fuiste tú, ignora este correo.</p>`,
+    }),
+    signal: AbortSignal.timeout(5000),
+  }).catch((error) => {
+    logger.warn("alert_confirmation_email_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
 
 app.use(
   "*",
@@ -144,10 +211,6 @@ const dealsQuerySchema = z.object({
 
 const similarQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(8),
-});
-
-const alertsQuerySchema = z.object({
-  email: z.string().email("email es requerido y debe ser un correo válido"),
 });
 
 const triggerScrapeQuerySchema = z.object({
@@ -234,7 +297,12 @@ const routes = app
           items: result.items,
           pagination: result.pagination,
           facets: result.facets,
-          meta: { cached: false, lastScrapedAt },
+          meta: {
+            cached: false,
+            lastScrapedAt,
+            // Productos con 2+ tiendas en stock (comparables reales)
+            comparableCount: result.comparableCount,
+          },
         };
       });
       return c.json({
@@ -318,6 +386,8 @@ const routes = app
   })
 
   // ------------------------------------------------------------- alerts
+  // Doble opt-in (auditoría #4): autenticado con su mismo correo → verificado;
+  // invitado → confirmToken + correo de confirmación (Resend si está activo).
   .post(
     "/api/alerts",
     rateLimitMiddleware({ limit: 10, windowSec: 60, bucket: "alerts" }),
@@ -335,61 +405,146 @@ const routes = app
         );
       }
       const session = await getSessionUser(c.req.raw.headers);
-      const alert = await createPriceAlert(input, session?.user?.id ?? null);
+      const sessionUser = session?.user;
+      const sameEmailAsSession =
+        sessionUser &&
+        sessionUser.email.toLowerCase() === input.email.toLowerCase();
+
+      if (sameEmailAsSession) {
+        // Usuario autenticado con ese mismo correo: alerta verificada de una vez
+        const alert = await createPriceAlert(
+          input,
+          sessionUser.id,
+          { verified: true, confirmedAt: new Date() }
+        );
+        if (!alert) {
+          return c.json(
+            { error: "create_failed", message: "No se pudo crear la alerta." },
+            500
+          );
+        }
+        return c.json({ alert }, 201);
+      }
+
+      // Invitado: doble opt-in con token de confirmación único
+      const confirmToken = crypto.randomUUID();
+      const alert = await createPriceAlert(input, sessionUser?.id ?? null, {
+        verified: false,
+        confirmToken,
+      });
       if (!alert) {
         return c.json(
           { error: "create_failed", message: "No se pudo crear la alerta." },
           500
         );
       }
-      return c.json({ alert }, 201);
+
+      const origin = new URL(c.req.url).origin;
+      const confirmUrl = `${origin}/api/alerts/confirm?token=${confirmToken}`;
+      void sendAlertConfirmationEmail(input.email, confirmUrl, alert.product.canonicalName);
+
+      return c.json(
+        {
+          alert,
+          requiresConfirmation: true,
+          confirmUrl: isProduction ? undefined : confirmUrl,
+        },
+        201
+      );
     }
   )
+
+  // Cierre de fuga Ley 81 (auditoría #3): NUNCA listado público por email.
   .get(
     "/api/alerts",
-    zValidator("query", alertsQuerySchema, validationHook),
+    requireUser,
     rateLimitMiddleware({ limit: 60, windowSec: 60, bucket: "alerts-list" }),
     async (c) => {
-      const { email } = c.req.valid("query");
-      const alerts = await listAlertsByEmail(email);
+      const alerts = await listUserAlerts(c.get("meUser"));
       return c.json({ alerts });
     }
   )
 
-  // ------------------------------------------------------------- Mi Espacio (auth)
-  .get("/api/me/overview", async (c) => {
-    const session = await getSessionUser(c.req.raw.headers);
-    if (!session?.user) {
-      return c.json(
-        { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-        401
-      );
+  .get(
+    "/api/alerts/confirm",
+    rateLimitMiddleware({ limit: 10, windowSec: 60, bucket: "alerts-confirm" }),
+    async (c) => {
+      const token = c.req.query("token")?.trim();
+      let confirmed = false;
+      if (token) {
+        const rows = await db
+          .update(priceAlerts)
+          .set({
+            verified: true,
+            confirmedAt: new Date(),
+            // El token se consume: reutilizar el enlace → 404
+            confirmToken: null,
+          })
+          .where(eq(priceAlerts.confirmToken, token))
+          .returning({ id: priceAlerts.id });
+        confirmed = rows.length > 0;
+      }
+      const html = confirmed
+        ? `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Alerta confirmada — RegateoApp</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}div{text-align:center;max-width:480px;padding:2rem}h1{font-size:1.4rem}a{color:#e11d48}</style></head><body><div><h1>¡Alerta confirmada! 🔔</h1><p>Te avisaremos por correo cuando el precio baje al nivel que elegiste.</p><p><a href="${webUrl}">Volver a RegateoApp</a></p></div></body></html>`
+        : `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Enlace inválido — RegateoApp</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}div{text-align:center;max-width:480px;padding:2rem}a{color:#e11d48}</style></head><body><div><h1>Enlace de confirmación inválido</h1><p>El enlace no existe o ya fue utilizado.</p><p><a href="${webUrl}">Volver a RegateoApp</a></p></div></body></html>`;
+      return c.body(html, confirmed ? 200 : 404, {
+        "content-type": "text/html; charset=UTF-8",
+      });
     }
-    const overview = await getUserOverview({
-      id: session.user.id,
-      name: session.user.name,
-      email: session.user.email,
-      image: session.user.image ?? null,
-    });
-    return c.json(overview);
+  )
+
+  // ------------------------------------------------------------- reports
+  .post(
+    "/api/reports",
+    rateLimitMiddleware({ limit: 10, windowSec: 60, bucket: "reports" }),
+    zValidator("json", reportWrongPriceSchema, validationHook),
+    async (c) => {
+      const input = c.req.valid("json");
+      const [listing] = await db
+        .select({ id: storeListings.id })
+        .from(storeListings)
+        .where(
+          and(
+            eq(storeListings.id, input.listingId),
+            eq(storeListings.productId, input.productId)
+          )
+        )
+        .limit(1);
+      if (!listing) {
+        return c.json(
+          {
+            error: "not_found",
+            message: "El listado indicado no existe para ese producto.",
+          },
+          404
+        );
+      }
+      const [report] = await db
+        .insert(priceReports)
+        .values({
+          productId: input.productId,
+          listingId: input.listingId,
+          reason: input.reason,
+          details: input.details ?? null,
+        })
+        .returning({ id: priceReports.id });
+      return c.json({ ok: true, id: report.id }, 201);
+    }
+  )
+
+  // ------------------------------------------------------------- Mi Espacio (auth)
+  .get("/api/me/overview", requireUser, async (c) => {
+    const me = c.get("meUser");
+    return c.json(await getUserOverview(me));
   })
 
   .post(
     "/api/me/favorites",
+    requireUser,
     rateLimitMiddleware({ limit: 60, windowSec: 60, bucket: "me-favorites" }),
     zValidator("json", createFavoriteSchema, validationHook),
     async (c) => {
-      const session = await getSessionUser(c.req.raw.headers);
-      if (!session?.user) {
-        return c.json(
-          { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-          401
-        );
-      }
-      const favorite = await addUserFavorite(
-        session.user.id,
-        c.req.valid("json")
-      );
+      const favorite = await addUserFavorite(c.get("meUser").id, c.req.valid("json"));
       if (!favorite) {
         return c.json(
           { error: "not_found", message: "El producto indicado no existe en el catálogo." },
@@ -400,16 +555,9 @@ const routes = app
     }
   )
 
-  .delete("/api/me/favorites/:productId", async (c) => {
-    const session = await getSessionUser(c.req.raw.headers);
-    if (!session?.user) {
-      return c.json(
-        { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-        401
-      );
-    }
+  .delete("/api/me/favorites/:productId", requireUser, async (c) => {
     const removed = await removeUserFavorite(
-      session.user.id,
+      c.get("meUser").id,
       c.req.param("productId")
     );
     if (!removed) {
@@ -423,50 +571,28 @@ const routes = app
 
   .post(
     "/api/me/favorites/sync",
+    requireUser,
     rateLimitMiddleware({ limit: 30, windowSec: 60, bucket: "me-favorites-sync" }),
     zValidator("json", syncFavoritesSchema, validationHook),
     async (c) => {
-      const session = await getSessionUser(c.req.raw.headers);
-      if (!session?.user) {
-        return c.json(
-          { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-          401
-        );
-      }
-      const result = await syncUserFavorites(
-        session.user.id,
-        c.req.valid("json")
-      );
+      const result = await syncUserFavorites(c.get("meUser").id, c.req.valid("json"));
       return c.json({ ok: true, added: result.added, skipped: result.skipped });
     }
   )
 
   .post(
     "/api/me/lists",
+    requireUser,
     rateLimitMiddleware({ limit: 30, windowSec: 60, bucket: "me-lists" }),
     zValidator("json", createShoppingListSchema, validationHook),
     async (c) => {
-      const session = await getSessionUser(c.req.raw.headers);
-      if (!session?.user) {
-        return c.json(
-          { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-          401
-        );
-      }
-      const list = await createUserList(session.user.id, c.req.valid("json"));
+      const list = await createUserList(c.get("meUser").id, c.req.valid("json"));
       return c.json({ list }, 201);
     }
   )
 
-  .delete("/api/me/lists/:listId", async (c) => {
-    const session = await getSessionUser(c.req.raw.headers);
-    if (!session?.user) {
-      return c.json(
-        { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-        401
-      );
-    }
-    const removed = await deleteUserList(session.user.id, c.req.param("listId"));
+  .delete("/api/me/lists/:listId", requireUser, async (c) => {
+    const removed = await deleteUserList(c.get("meUser").id, c.req.param("listId"));
     if (!removed) {
       return c.json(
         { error: "not_found", message: "Lista no encontrada o no es tuya." },
@@ -478,18 +604,12 @@ const routes = app
 
   .post(
     "/api/me/lists/:listId/items",
+    requireUser,
     rateLimitMiddleware({ limit: 60, windowSec: 60, bucket: "me-list-items" }),
     zValidator("json", addListItemSchema, validationHook),
     async (c) => {
-      const session = await getSessionUser(c.req.raw.headers);
-      if (!session?.user) {
-        return c.json(
-          { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-          401
-        );
-      }
       const item = await addItemToUserList(
-        session.user.id,
+        c.get("meUser").id,
         c.req.param("listId"),
         c.req.valid("json")
       );
@@ -506,16 +626,9 @@ const routes = app
     }
   )
 
-  .delete("/api/me/lists/:listId/items/:productId", async (c) => {
-    const session = await getSessionUser(c.req.raw.headers);
-    if (!session?.user) {
-      return c.json(
-        { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-        401
-      );
-    }
+  .delete("/api/me/lists/:listId/items/:productId", requireUser, async (c) => {
     const removed = await removeItemFromUserList(
-      session.user.id,
+      c.get("meUser").id,
       c.req.param("listId"),
       c.req.param("productId")
     );
@@ -530,22 +643,11 @@ const routes = app
 
   .patch(
     "/api/me/alerts/:alertId",
+    requireUser,
     zValidator("json", updateAlertSchema, validationHook),
     async (c) => {
-      const session = await getSessionUser(c.req.raw.headers);
-      if (!session?.user) {
-        return c.json(
-          { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-          401
-        );
-      }
       const alert = await updateUserAlert(
-        {
-          id: session.user.id,
-          name: session.user.name,
-          email: session.user.email,
-          image: session.user.image ?? null,
-        },
+        c.get("meUser"),
         c.req.param("alertId"),
         c.req.valid("json")
       );
@@ -559,21 +661,9 @@ const routes = app
     }
   )
 
-  .delete("/api/me/alerts/:alertId", async (c) => {
-    const session = await getSessionUser(c.req.raw.headers);
-    if (!session?.user) {
-      return c.json(
-        { error: "unauthorized", message: "Inicia sesión para acceder a Mi Espacio." },
-        401
-      );
-    }
+  .delete("/api/me/alerts/:alertId", requireUser, async (c) => {
     const removed = await deleteUserAlert(
-      {
-        id: session.user.id,
-        name: session.user.name,
-        email: session.user.email,
-        image: session.user.image ?? null,
-      },
+      c.get("meUser"),
       c.req.param("alertId")
     );
     if (!removed) {
@@ -589,6 +679,8 @@ const routes = app
   .post(
     "/api/ai/chat",
     rateLimitMiddleware({ limit: 20, windowSec: 60, bucket: "ai-chat" }),
+    // Cuota diaria adicional (auditoría #8): 40 mensajes/día por IP
+    rateLimitMiddleware({ limit: 40, windowSec: 86_400, bucket: "ai-chat-daily" }),
     zValidator("json", aiChatRequestSchema, validationHook),
     (c) => aiChatHandler(c.req.valid("json"))
   )
@@ -648,7 +740,7 @@ const routes = app
             ok: false,
             error: "scraper_unavailable",
             message:
-              "El módulo @regateo/scraper todavía no está disponible. Intentá cuando el pipeline de scraping esté listo.",
+              "El módulo @regateo/scraper todavía no está disponible. Intenta cuando el pipeline de scraping esté listo.",
           },
           503
         );
@@ -746,7 +838,202 @@ const routes = app
 
     await cacheInvalidatePrefix("products:");
     await cacheInvalidatePrefix("catalog:");
-    return c.json({ ok: true, invalidated: ["products:", "catalog:"] });
+    await cacheInvalidatePrefix("seo:");
+    return c.json({ ok: true, invalidated: ["products:", "catalog:", "seo:"] });
+  })
+
+  // ------------------------------------------------------------- tracking de clics
+  // Redirección medible hacia la tienda real: registra outbound_clicks
+  // asíncronamente y devuelve 302 al URL canónico de la tienda.
+  .get(
+    "/out/:listingId",
+    rateLimitMiddleware({ limit: 120, windowSec: 60, bucket: "out-clicks" }),
+    async (c) => {
+      const listingId = c.req.param("listingId");
+      const [listing] = await db
+        .select({
+          id: storeListings.id,
+          productId: storeListings.productId,
+          storeId: storeListings.storeId,
+          storeSlug: stores.slug,
+          url: storeListings.url,
+        })
+        .from(storeListings)
+        .innerJoin(stores, eq(stores.id, storeListings.storeId))
+        .where(eq(storeListings.id, listingId))
+        .limit(1);
+
+      if (!listing) {
+        return c.json(
+          { error: "not_found", message: "Listado no encontrado." },
+          404
+        );
+      }
+      if (!/^https?:\/\//i.test(listing.url)) {
+        return c.json(
+          { error: "invalid_url", message: "El listado no tiene un URL válido." },
+          422
+        );
+      }
+
+      const source = (c.req.query("src") ?? "card").slice(0, 32);
+      void db
+        .insert(outboundClicks)
+        .values({
+          listingId: listing.id,
+          productId: listing.productId,
+          storeId: listing.storeId,
+          storeSlug: listing.storeSlug,
+          source,
+        })
+        .catch(() => {
+          // la medición jamás bloquea la redirección
+        });
+
+      return c.redirect(listing.url, 302);
+    }
+  )
+
+  // ------------------------------------------------------------- SEO
+  .get("/robots.txt", (c) => {
+    const origin = new URL(c.req.url).origin;
+    return c.body(
+      `User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /out/\n\nSitemap: ${origin}/sitemap.xml\n`,
+      200,
+      { "content-type": "text/plain; charset=UTF-8" }
+    );
+  })
+
+  .get("/sitemap.xml", async (c) => {
+    const origin = new URL(c.req.url).origin;
+    const { value } = await cacheGetOrSet("seo:sitemap", 3600, async () => {
+      const [productRows, categoryRows] = await Promise.all([
+        db
+          .select({ slug: products.slug, updatedAt: products.updatedAt })
+          .from(products)
+          .orderBy(desc(products.updatedAt))
+          .limit(1000),
+        db
+          .select({ key: products.category })
+          .from(products)
+          .groupBy(products.category),
+      ]);
+
+      const urls: string[] = [];
+      for (const row of categoryRows) {
+        urls.push(
+          `  <url><loc>${webUrl}/?categoria=${row.key}</loc><changefreq>daily</changefreq></url>`
+        );
+      }
+      for (const row of productRows) {
+        const lastmod = (row.updatedAt instanceof Date
+          ? row.updatedAt
+          : new Date(row.updatedAt)
+        )
+          .toISOString()
+          .slice(0, 10);
+        urls.push(
+          `  <url><loc>${origin}/p/${row.slug}</loc><lastmod>${lastmod}</lastmod><changefreq>daily</changefreq></url>`
+        );
+      }
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>\n`;
+    });
+    return c.body(value, 200, { "content-type": "application/xml; charset=UTF-8" });
+  })
+
+  // Ficha SEO liviana con JSON-LD Product + AggregateOffer para WhatsApp/OG
+  .get("/p/:slug", async (c) => {
+    const slug = c.req.param("slug");
+    const { value } = await cacheGetOrSet(`seo:p:${slug}`, 300, async () => ({
+      product: await getProductBySlug(slug),
+    }));
+    const product = value.product;
+
+    if (!product) {
+      return c.body(
+        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\"><title>Producto no encontrado — RegateoApp</title></head><body><h1>Producto no encontrado</h1><p><a href=\"" +
+          webUrl +
+          "\">Ir a RegateoApp</a></p></body></html>",
+        404,
+        { "content-type": "text/html; charset=UTF-8" }
+      );
+    }
+
+    const escapeHtml = (text: string): string =>
+      text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+
+    const origin = new URL(c.req.url).origin;
+    const spaUrl = `${webUrl}/?producto=${encodeURIComponent(slug)}`;
+    const bestUsd = formatUsdFromCents(product.bestPriceCents);
+    const savingsUsd =
+      product.savingsCents > 0 ? formatUsdFromCents(product.savingsCents) : null;
+    const title = `${product.canonicalName} desde ${bestUsd} | RegateoApp`;
+    const description =
+      `Compara precios de ${product.canonicalName} en ${product.storeCount} tienda${
+        product.storeCount === 1 ? "" : "s"
+      } de Panamá${savingsUsd ? ` y ahorra hasta ${savingsUsd}` : ""}. El mejor precio hoy: ${bestUsd} en ${
+        product.bestStore?.name ?? "la tienda con mejor precio"
+      }.`;
+    const jsonLd = {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      name: product.canonicalName,
+      ...(product.brand ? { brand: { "@type": "Brand", name: product.brand } } : {}),
+      ...(product.imageUrl ? { image: product.imageUrl } : {}),
+      description,
+      offers: {
+        "@type": "AggregateOffer",
+        priceCurrency: "USD",
+        lowPrice: product.bestPriceCents / 100,
+        highPrice: product.highestPriceCents / 100,
+        offerCount: product.storeCount,
+        offers: product.listings.map((listing) => ({
+          "@type": "Offer",
+          price: listing.priceCents / 100,
+          priceCurrency: "USD",
+          availability: listing.inStock
+            ? "https://schema.org/InStock"
+            : "https://schema.org/OutOfStock",
+          url: listing.url,
+          seller: { "@type": "Organization", name: listing.storeName },
+        })),
+      },
+    };
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(title)}</title>
+<meta name="description" content="${escapeHtml(description)}">
+<link rel="canonical" href="${origin}/p/${slug}">
+<meta property="og:type" content="product">
+<meta property="og:site_name" content="RegateoApp">
+<meta property="og:title" content="${escapeHtml(title)}">
+<meta property="og:description" content="${escapeHtml(description)}">
+<meta property="og:image" content="${escapeHtml(product.imageUrl ?? "")}">
+<meta property="og:url" content="${origin}/p/${slug}">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
+</head>
+<body>
+<main style="font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem">
+<h1>${escapeHtml(product.canonicalName)}</h1>
+<p>Mejor precio hoy: <strong style="font-variant-numeric:tabular-nums">${bestUsd}</strong> en ${escapeHtml(
+      product.bestStore?.name ?? "la tienda con mejor precio"
+    )}${savingsUsd ? ` — ahorra hasta ${savingsUsd} comparando tiendas` : ""}.</p>
+<p><a href="${spaUrl}" style="color:#e11d48">Ver comparación completa de precios en RegateoApp</a></p>
+</main>
+<script>setTimeout(function(){window.location.replace(decodeURIComponent(encodeURIComponent("${spaUrl.replace(/"/g, "%22")}")));},1500);</script>
+</body>
+</html>`;
+
+    return c.body(html, 200, { "content-type": "text/html; charset=UTF-8" });
   });
 
 export type AppType = typeof routes;

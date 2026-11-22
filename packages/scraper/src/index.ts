@@ -11,6 +11,11 @@ export { runScrapePipeline } from "./pipeline";
 
 export { ensureStoresSeeded, ingestScrapedItems } from "./ingest";
 
+export {
+  evaluateAndDispatchPriceAlerts,
+  type AlertDispatchResult,
+} from "./alerts";
+
 export type { RawScrapedItem, StoreAdapter, ScrapeEngine, IngestResult } from "./types";
 
 export { createStoreAdapter } from "./adapters";

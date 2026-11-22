@@ -21,6 +21,7 @@ import {
   priceHistory,
   scrapeRuns,
   priceAlerts,
+  searchEvents,
 } from "@regateo/db";
 import {
   PRODUCT_CATEGORIES,
@@ -57,6 +58,8 @@ export interface CatalogSearchResult {
   items: ProductSummaryDTO[];
   pagination: CatalogPagination;
   facets: CatalogFacets;
+  /** Productos con 2+ tiendas distintas en stock (comparables reales). */
+  comparableCount: number;
 }
 
 export interface ScrapeRunDTO {
@@ -97,17 +100,19 @@ function toIso(value: Date | string | null | undefined): string | null {
 // Subquery agregada de listings por producto (best/highest price, stores...)
 // ---------------------------------------------------------------------------
 function listingStatsSubquery() {
+  // Verdad del precio: best/highest SOLO sobre listings en stock; coalesce a
+  // todos únicamente cuando no queda ninguno con stock. bestListingId apunta
+  // al listing ganador (en stock primero, luego más barato).
   return db
     .select({
       productId: storeListings.productId,
-      bestPriceCents: sql<number>`min(${storeListings.priceCents})::int`.as("best_price_cents"),
-      highestPriceCents: sql<number>`max(${storeListings.priceCents})::int`.as("highest_price_cents"),
-      maxOriginalPriceCents: sql<
-        number | null
-      >`max(${storeListings.originalPriceCents})::int`.as("max_original_price_cents"),
+      bestPriceCents: sql<number>`coalesce((min(${storeListings.priceCents}) filter (where ${storeListings.inStock}))::int, (min(${storeListings.priceCents}))::int)`.as("best_price_cents"),
+      highestPriceCents: sql<number>`coalesce((max(${storeListings.priceCents}) filter (where ${storeListings.inStock}))::int, (max(${storeListings.priceCents}))::int)`.as("highest_price_cents"),
+      bestListingId: sql<string>`(array_agg(${storeListings.id} order by ${storeListings.inStock} desc, ${storeListings.priceCents} asc))[1]`.as("best_listing_id"),
       storeCount: sql<number>`count(distinct ${storeListings.storeId})::int`.as("store_count"),
       inStockCount:
         sql<number>`(count(*) filter (where ${storeListings.inStock}))::int`.as("in_stock_count"),
+      storeCountInStock: sql<number>`(count(distinct ${storeListings.storeId}) filter (where ${storeListings.inStock}))::int`.as("store_count_in_stock"),
     })
     .from(storeListings)
     .groupBy(storeListings.productId)
@@ -116,18 +121,23 @@ function listingStatsSubquery() {
 
 type ListingStats = ReturnType<typeof listingStatsSubquery>;
 
-/** Ahorro real: mayor spread entre tiendas o descuento sobre precio original. */
+/**
+ * Ahorro REAL y verificable: spread entre tiendas CON STOCK. Si solo hay una
+ * tienda con stock, no hay comparación posible → 0 (nunca descuentos
+ * inflados por la propia tienda). El descuento de tienda se reporta aparte
+ * como storeDiscountCents/storeDiscountPercent en el DTO.
+ */
 function savingsExpr(agg: ListingStats) {
-  return sql<number>`greatest(${agg.highestPriceCents} - ${agg.bestPriceCents}, coalesce(${agg.maxOriginalPriceCents}, 0) - ${agg.bestPriceCents}, 0)::int`;
+  return sql<number>`(case when ${agg.storeCountInStock} >= 2 then greatest(${agg.highestPriceCents} - ${agg.bestPriceCents}, 0) else 0 end)::int`;
 }
 
 function buildConditions(query: ProductSearchQuery, agg: ListingStats): SqlCondition[] {
   const conditions: SqlCondition[] = [];
 
   if (query.q) {
-    // Búsqueda multi-token (AND): cada término significativo debe aparecer en
-    // nombre, marca, modelo, slug — o en el título/external_id de un listing
-    // (Ej: "155144" encuentra el producto por SKU de tienda).
+    // Búsqueda multi-token (AND) insensible a acentos y mayúsculas vía
+    // unaccent(): "camara" encuentra "Cámara", "portatil" encuentra
+    // "Portátil". También busca en title_at_store y external_id de listings.
     const tokens = query.q
       .toLowerCase()
       .split(/[\s,]+/)
@@ -139,11 +149,11 @@ function buildConditions(query: ProductSearchQuery, agg: ListingStats): SqlCondi
       const like = `%${token}%`;
       conditions.push(
         or(
-          ilike(products.canonicalName, like),
-          ilike(products.brand, like),
-          ilike(products.modelNumber, like),
-          ilike(products.slug, like),
-          sql`exists (select 1 from ${storeListings} sl where sl.product_id = ${products.id} and (sl.title_at_store ilike ${like} or sl.external_id ilike ${like}))`
+          sql`unaccent(lower(${products.canonicalName})) like unaccent(lower(${like}))`,
+          sql`unaccent(lower(${products.brand})) like unaccent(lower(${like}))`,
+          sql`lower(${products.modelNumber}) like lower(${like})`,
+          sql`unaccent(lower(${products.slug})) like unaccent(lower(${like}))`,
+          sql`exists (select 1 from ${storeListings} sl where sl.product_id = ${products.id} and (unaccent(lower(sl.title_at_store)) like unaccent(lower(${like})) or lower(sl.external_id) like lower(${like})))`
         ) as SqlCondition
       );
     }
@@ -176,35 +186,57 @@ function buildConditions(query: ProductSearchQuery, agg: ListingStats): SqlCondi
     conditions.push(sql`${agg.inStockCount} > 0` as SqlCondition);
   }
   if (query.multiStoreOnly) {
-    conditions.push(sql`${agg.storeCount} >= 2` as SqlCondition);
+    // Comparables reales: 2+ tiendas DISTINTAS con stock
+    conditions.push(sql`${agg.storeCountInStock} >= 2` as SqlCondition);
   }
   return conditions;
 }
 
 function buildOrderBy(
   agg: ListingStats,
-  sort: ProductSearchQuery["sort"]
+  sort: ProductSearchQuery["sort"],
+  q?: string
 ): SqlCondition[] {
+  // Relevancia: con q presente y sort explícito "relevance" (o el default
+  // "most-stores" sin que el usuario lo cambiara), prioriza similitud
+  // pg_trgm y penaliza la categoría "accesorios" cuando la búsqueda nombra
+  // un dispositivo principal.
+  const useRelevance =
+    Boolean(q) && (sort === "relevance" || sort === "most-stores");
+  if (useRelevance) {
+    const namesMainDevice = MAIN_DEVICE_PATTERN.test(q as string);
+    return [
+      desc(
+        sql`similarity(unaccent(lower(${products.canonicalName})), unaccent(lower(${q}))) - (case when ${products.category} = 'accesorios' and ${namesMainDevice} then 0.5 else 0 end)`
+      ) as SqlCondition,
+      desc(savingsExpr(agg)) as SqlCondition,
+      desc(agg.storeCount) as SqlCondition,
+    ];
+  }
   switch (sort) {
     case "price-asc":
       return [asc(agg.bestPriceCents) as SqlCondition];
     case "price-desc":
       return [desc(agg.bestPriceCents) as SqlCondition];
-    case "most-stores":
-      return [
-        desc(agg.storeCount) as SqlCondition,
-        desc(savingsExpr(agg)) as SqlCondition,
-      ];
     case "recent":
       return [desc(products.updatedAt) as SqlCondition];
     case "best-savings":
-    default:
       return [
         desc(savingsExpr(agg)) as SqlCondition,
         desc(agg.storeCount) as SqlCondition,
       ];
+    case "most-stores":
+    default:
+      return [
+        desc(agg.storeCount) as SqlCondition,
+        desc(savingsExpr(agg)) as SqlCondition,
+      ];
   }
 }
+
+/** Dispositivos principales: si la búsqueda nombra uno, "accesorios" baja. */
+const MAIN_DEVICE_PATTERN =
+  /\b(iphone|galaxy|tv|televisor|laptop|lavadora|monitor|mouse)\b/i;
 
 // ---------------------------------------------------------------------------
 // Filas de listings con datos de tienda, para armar los DTOs
@@ -252,7 +284,9 @@ async function fetchListingRows(productIds: string[]): Promise<Map<string, Listi
     .from(storeListings)
     .innerJoin(stores, eq(stores.id, storeListings.storeId))
     .where(inArray(storeListings.productId, productIds))
-    .orderBy(asc(storeListings.priceCents));
+    // En stock PRIMERO y luego precio ascendente: el mejor listing ganador
+    // (listings[0]) nunca es un agotado si otra tienda sí tiene stock.
+    .orderBy(desc(storeListings.inStock), asc(storeListings.priceCents));
 
   for (const row of rows) {
     const bucket = grouped.get(row.productId);
@@ -263,7 +297,8 @@ async function fetchListingRows(productIds: string[]): Promise<Map<string, Listi
 }
 
 function buildListingDTOs(rows: ListingRow[]): StoreListingDTO[] {
-  const best = rows.length > 0 ? rows[0].priceCents : 0;
+  const winner = rows[0];
+  const best = winner ? winner.priceCents : 0;
   return rows.map((row) => ({
     id: row.id,
     storeId: row.storeId,
@@ -279,14 +314,16 @@ function buildListingDTOs(rows: ListingRow[]): StoreListingDTO[] {
     url: row.url,
     imageUrl: row.imageUrl ?? null,
     lastCheckedAt: toIso(row.lastCheckedAt) ?? new Date().toISOString(),
-    isCheapest: row.priceCents === best,
+    // isCheapest solo para el listing ganador (en stock y más barato)
+    isCheapest: Boolean(winner) && row.id === winner.id,
     deltaFromCheapestCents: row.priceCents - best,
   }));
 }
 
 function roundSavingsPercent(savingsCents: number, highestCents: number): number {
   if (highestCents <= 0 || savingsCents <= 0) return 0;
-  return Math.round((savingsCents / highestCents) * 10000) / 100;
+  // Nunca > 99% (auditoría: evitar porcentajes absurdos por datos sucios)
+  return Math.min(99, Math.round((savingsCents / highestCents) * 10000) / 100);
 }
 
 interface ProductRowLite {
@@ -311,6 +348,27 @@ function buildSummaryDTO(
   listingDTOs: StoreListingDTO[]
 ): ProductSummaryDTO {
   const bestListing = listingDTOs[0] ?? null;
+
+  // Descuento de la TIENDA ganadora sobre su propio precio original
+  // (descartado si el "antes" está inflado: > 65%)
+  let storeDiscountCents = 0;
+  let storeDiscountPercent = 0;
+  if (
+    bestListing &&
+    bestListing.originalPriceCents &&
+    bestListing.originalPriceCents > bestListing.priceCents
+  ) {
+    const percent =
+      ((bestListing.originalPriceCents - bestListing.priceCents) /
+        bestListing.originalPriceCents) *
+      100;
+    if (percent <= 65) {
+      storeDiscountCents =
+        bestListing.originalPriceCents - bestListing.priceCents;
+      storeDiscountPercent = Math.round(percent * 100) / 100;
+    }
+  }
+
   return {
     id: row.id,
     slug: row.slug,
@@ -321,8 +379,12 @@ function buildSummaryDTO(
     imageUrl: row.imageUrl ?? null,
     bestPriceCents: row.bestPriceCents,
     highestPriceCents: row.highestPriceCents,
+    // Ahorro verificable SOLO entre tiendas con stock (0 si 1 tienda)
     savingsCents: row.savingsCents,
     savingsPercent: roundSavingsPercent(row.savingsCents, row.highestPriceCents),
+    // Descuento anunciado por la tienda ganadora (tope 65% anti-"antes" inflado)
+    storeDiscountCents,
+    storeDiscountPercent,
     storeCount: row.storeCount,
     inStockCount: row.inStockCount,
     bestStore: bestListing
@@ -331,6 +393,8 @@ function buildSummaryDTO(
           name: bestListing.storeName,
           color: bestListing.storeColor,
           url: bestListing.url,
+          listingId: bestListing.id,
+          inStock: bestListing.inStock,
         }
       : null,
     listings: listingDTOs,
@@ -369,36 +433,55 @@ export async function searchProducts(
     .from(products)
     .innerJoin(agg, eq(agg.productId, products.id))
     .where(where)
-    .orderBy(...buildOrderBy(agg, query.sort))
+    .orderBy(...buildOrderBy(agg, query.sort, query.q))
     .limit(query.limit)
     .offset((query.page - 1) * query.limit);
 
-  const [totalRow] = await db
-    .select({ total: sql<number>`count(*)::int` })
-    .from(products)
-    .innerJoin(agg, eq(agg.productId, products.id))
-    .where(where);
+  const [totalRows, comparableRows] = await Promise.all([
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(products)
+      .innerJoin(agg, eq(agg.productId, products.id))
+      .where(where),
+    db
+      .select({
+        comparable: sql<number>`(count(*) filter (where ${agg.storeCountInStock} >= 2))::int`,
+      })
+      .from(products)
+      .innerJoin(agg, eq(agg.productId, products.id))
+      .where(where),
+  ]);
 
-  const total = totalRow?.total ?? 0;
+  const total = totalRows[0]?.total ?? 0;
+  const comparableCount = comparableRows[0]?.comparable ?? 0;
 
   const listingRows = await fetchListingRows(pageRows.map((row) => row.id));
   const items = pageRows.map((row) =>
     buildSummaryDTO(row, buildListingDTOs(listingRows.get(row.id) ?? []))
   );
 
+  // Facetas INDEPENDIENTES: al contar categorías se excluye el filtro
+  // category; al contar marcas se excluye brand; al contar tiendas se excluye
+  // store. Así las facetas nunca "desaparecen" al seleccionar un filtro.
+  const categoryFacetWhere = and(
+    ...buildConditions({ ...query, category: undefined }, agg)
+  );
+  const brandFacetWhere = and(...buildConditions({ ...query, brand: undefined }, agg));
+  const storeFacetWhere = and(...buildConditions({ ...query, store: undefined }, agg));
+
   const [categoryRows, brandRows, storeRows] = await Promise.all([
     db
       .select({ key: products.category, count: sql<number>`count(*)::int` })
       .from(products)
       .innerJoin(agg, eq(agg.productId, products.id))
-      .where(where)
+      .where(categoryFacetWhere)
       .groupBy(products.category)
       .orderBy(desc(sql`count(*)`)),
     db
       .select({ name: products.brand, count: sql<number>`count(*)::int` })
       .from(products)
       .innerJoin(agg, eq(agg.productId, products.id))
-      .where(where)
+      .where(brandFacetWhere)
       .groupBy(products.brand)
       .orderBy(desc(sql`count(*)`))
       .limit(40),
@@ -412,7 +495,7 @@ export async function searchProducts(
       .innerJoin(agg, eq(agg.productId, products.id))
       .innerJoin(storeListings, eq(storeListings.productId, products.id))
       .innerJoin(stores, eq(stores.id, storeListings.storeId))
-      .where(where)
+      .where(storeFacetWhere)
       .groupBy(stores.slug, stores.name)
       .orderBy(desc(sql`count(distinct ${products.id})`)),
   ]);
@@ -431,6 +514,20 @@ export async function searchProducts(
     })),
   };
 
+  // Registro asíncrono de búsquedas (fire-and-forget, nunca bloquea)
+  if (query.q && query.q.trim().length >= 2) {
+    void db
+      .insert(searchEvents)
+      .values({
+        query: query.q.trim().slice(0, 200),
+        category: query.category ?? null,
+        resultsCount: total,
+      })
+      .catch(() => {
+        // analítica: errores silenciosos
+      });
+  }
+
   return {
     items,
     pagination: {
@@ -440,6 +537,7 @@ export async function searchProducts(
       totalPages: Math.max(1, Math.ceil(total / query.limit)),
     },
     facets,
+    comparableCount,
   };
 }
 
@@ -677,9 +775,32 @@ export async function productExistsById(productId: string): Promise<boolean> {
   return Boolean(row);
 }
 
+export interface AlertDTO {
+  id: string;
+  email: string;
+  targetPriceCents: number;
+  active: boolean;
+  verified: boolean;
+  createdAt: string;
+  product: {
+    id: string;
+    slug: string;
+    canonicalName: string;
+    imageUrl: string | null;
+    currentBestPriceCents: number | null;
+  };
+}
+
+export interface CreatePriceAlertOptions {
+  verified?: boolean;
+  confirmToken?: string | null;
+  confirmedAt?: Date | null;
+}
+
 export async function createPriceAlert(
   input: CreatePriceAlertInput,
-  userId?: string | null
+  userId?: string | null,
+  options: CreatePriceAlertOptions = {}
 ): Promise<AlertDTO | null> {
   const [alert] = await db
     .insert(priceAlerts)
@@ -689,6 +810,10 @@ export async function createPriceAlert(
       targetPriceCents: input.targetPriceCents,
       active: true,
       userId: userId ?? null,
+      // Doble opt-in (Ley 81): invitados nacen sin verificar + confirmToken
+      verified: options.verified ?? false,
+      confirmToken: options.confirmToken ?? null,
+      confirmedAt: options.confirmedAt ?? null,
     })
     .returning();
 
@@ -710,6 +835,7 @@ export async function createPriceAlert(
     email: alert.email,
     targetPriceCents: alert.targetPriceCents,
     active: alert.active,
+    verified: alert.verified,
     createdAt: toIso(alert.createdAt) ?? new Date().toISOString(),
     product: {
       id: productRow?.id ?? input.productId,
@@ -727,43 +853,6 @@ export async function bestPriceForProduct(productId: string): Promise<number | n
     .from(storeListings)
     .where(eq(storeListings.productId, productId));
   return row?.best ?? null;
-}
-
-export async function listAlertsByEmail(email: string): Promise<AlertDTO[]> {
-  const alertRows = await db
-    .select({
-      id: priceAlerts.id,
-      email: priceAlerts.email,
-      targetPriceCents: priceAlerts.targetPriceCents,
-      active: priceAlerts.active,
-      createdAt: priceAlerts.createdAt,
-      productId: priceAlerts.productId,
-      slug: products.slug,
-      canonicalName: products.canonicalName,
-      imageUrl: products.imageUrl,
-    })
-    .from(priceAlerts)
-    .innerJoin(products, eq(products.id, priceAlerts.productId))
-    .where(and(eq(priceAlerts.email, email), eq(priceAlerts.active, true)))
-    .orderBy(desc(priceAlerts.createdAt))
-    .limit(100);
-
-  return Promise.all(
-    alertRows.map(async (row) => ({
-      id: row.id,
-      email: row.email,
-      targetPriceCents: row.targetPriceCents,
-      active: row.active,
-      createdAt: toIso(row.createdAt) ?? new Date().toISOString(),
-      product: {
-        id: row.productId,
-        slug: row.slug,
-        canonicalName: row.canonicalName,
-        imageUrl: row.imageUrl ?? null,
-        currentBestPriceCents: await bestPriceForProduct(row.productId),
-      },
-    }))
-  );
 }
 
 /**

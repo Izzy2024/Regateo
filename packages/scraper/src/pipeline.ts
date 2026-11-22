@@ -1,13 +1,15 @@
-import { db, eq, scrapeRuns, stores } from "@regateo/db";
+import { and, db, eq, sql, scrapeRuns, storeListings, stores } from "@regateo/db";
 import { PANAMA_STORES, type PanamaStoreConfig } from "@regateo/shared";
 import { createStoreAdapter } from "./adapters";
+import { evaluateAndDispatchPriceAlerts } from "./alerts";
 import { enrichStoreFromDatabase } from "./enrich";
 import { getFirecrawlClient } from "./firecrawl-client";
 import { ensureStoresSeeded, ingestScrapedItems } from "./ingest";
 
 /**
- * Orchestrates a full scrape: seed stores → run each store adapter → ingest →
- * record `scrape_runs` rows. One failing store never aborts the whole pipeline.
+ * Orchestrates a full scrape: seed stores → run each store adapter (2-3 in
+ * parallel) → ingest (serialized) → record `scrape_runs` → dispatch price
+ * alerts. One failing store never aborts the whole pipeline.
  */
 
 export interface ScrapeRunSummary {
@@ -18,6 +20,8 @@ export interface ScrapeRunSummary {
   itemsFound: number;
   itemsUpserted: number;
   errorMessage?: string;
+  /** Set when the store returned <60% of its previous listings. */
+  healthWarning?: string;
 }
 
 export interface RunScrapePipelineOptions {
@@ -26,6 +30,8 @@ export interface RunScrapePipelineOptions {
   useFirecrawl?: boolean;
   /** Cross-store model search enrichment (default true). */
   enrich?: boolean;
+  /** Stores scraped in parallel (default 2, max 3). */
+  concurrency?: number;
   /** Silences progress logging (used by `--json` in CI). */
   quiet?: boolean;
 }
@@ -34,31 +40,31 @@ const DEFAULT_MAX_PER_STORE = 5000;
 const HARD_MAX_PER_STORE = 20_000;
 const ENRICH_LIMIT = Number(process.env.SCRAPE_ENRICH_LIMIT ?? 80);
 const STORE_TIMEOUT_MS = Number(process.env.SCRAPE_STORE_TIMEOUT_MS ?? 15 * 60 * 1000);
+const DEFAULT_CONCURRENCY = Number(process.env.SCRAPE_CONCURRENCY ?? 2);
+const HEALTH_MIN_RATIO = 0.6;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${label} excedió el tiempo límite de ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
-
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    );
-  });
+/**
+ * Serializes DB ingestion across parallel store workers: scraping is I/O bound
+ * and parallel, but slug/key upserts must not race each other.
+ */
+let ingestChain: Promise<unknown> = Promise.resolve();
+function withIngestLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = ingestChain.then(task, task);
+  ingestChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
 }
 
-function resolveTargets(requested: string[] | undefined, log: (message: string) => void): PanamaStoreConfig[] {
+function resolveTargets(
+  requested: string[] | undefined,
+  log: (message: string) => void
+): PanamaStoreConfig[] {
   const enabled = PANAMA_STORES.filter((store) => store.enabled);
   if (!requested || requested.length === 0) return enabled;
 
@@ -79,11 +85,143 @@ function resolveTargets(requested: string[] | undefined, log: (message: string) 
   return targets;
 }
 
+interface StoreRunContext {
+  store: PanamaStoreConfig;
+  position: string;
+  adapter: ReturnType<typeof createStoreAdapter>;
+  storeId: string | null;
+  log: (message: string) => void;
+}
+
+async function previousListingCount(storeId: string | null): Promise<number> {
+  if (!storeId) return 0;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(storeListings)
+    .where(eq(storeListings.storeId, storeId));
+  return Number(row?.count ?? 0);
+}
+
+async function runSingleStore(
+  context: StoreRunContext,
+  options: { maxPerStore: number; useFirecrawl: boolean }
+): Promise<ScrapeRunSummary> {
+  const { store, adapter, storeId, log } = context;
+
+  const [run] = await db
+    .insert(scrapeRuns)
+    .values({
+      storeId,
+      storeSlug: store.slug,
+      engine: adapter.engine,
+      status: "running",
+      startedAt: new Date(),
+    })
+    .returning({ id: scrapeRuns.id });
+
+  const runId = run?.id ?? crypto.randomUUID();
+  const before = await previousListingCount(storeId);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STORE_TIMEOUT_MS);
+
+  try {
+    log(`${context.position} ${store.name} (${store.slug}) · ${adapter.engine}`);
+
+    const items = await adapter.scrape({
+      store,
+      maxPerStore: options.maxPerStore,
+      useFirecrawl: options.useFirecrawl,
+      signal: controller.signal,
+      log,
+    });
+
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Timeout de ${Math.round(STORE_TIMEOUT_MS / 1000)}s: el adaptador fue cancelado`
+      );
+    }
+
+    const healthWarning =
+      before > 0 && items.length < before * HEALTH_MIN_RATIO
+        ? `Salud: ${items.length} listings vs ${before} previos (<${Math.round(
+            HEALTH_MIN_RATIO * 100
+          )}%). Posible bloqueo o cambio de estructura.`
+        : undefined;
+    if (healthWarning) log(`    ⚠️  ${store.slug}: ${healthWarning}`);
+
+    let itemsUpserted = 0;
+    let skipped = 0;
+
+    if (items.length > 0) {
+      const result = await withIngestLock(() =>
+        ingestScrapedItems(store.slug, items, adapter.engine, {
+          signal: controller.signal,
+        })
+      );
+      itemsUpserted = result.itemsUpserted;
+      skipped = result.skipped;
+    }
+
+    await db
+      .update(scrapeRuns)
+      .set({
+        status: "completed",
+        itemsFound: items.length,
+        itemsUpserted,
+        finishedAt: new Date(),
+      })
+      .where(eq(scrapeRuns.id, runId));
+
+    log(
+      `    ✅ [${store.slug}] ${items.length} encontrados · ${itemsUpserted} guardados${
+        skipped > 0 ? ` · ${skipped} omitidos` : ""
+      }`
+    );
+
+    return {
+      runId,
+      storeSlug: store.slug,
+      engine: adapter.engine,
+      status: "completed",
+      itemsFound: items.length,
+      itemsUpserted,
+      healthWarning,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    await db
+      .update(scrapeRuns)
+      .set({
+        status: "failed",
+        errorMessage: message.slice(0, 2000),
+        finishedAt: new Date(),
+      })
+      .where(eq(scrapeRuns.id, runId))
+      .catch(() => undefined);
+
+    log(`    ❌ [${store.slug}] ${store.name} falló: ${message}`);
+
+    return {
+      runId,
+      storeSlug: store.slug,
+      engine: adapter.engine,
+      status: "failed",
+      itemsFound: 0,
+      itemsUpserted: 0,
+      errorMessage: message,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Runs the scraping pipeline and returns one summary per store.
  *
  * @example
- *   const summaries = await runScrapePipeline({ maxPerStore: 40 });
+ *   const summaries = await runScrapePipeline({ maxPerStore: 500 });
  */
 export async function runScrapePipeline(
   options: RunScrapePipelineOptions = {}
@@ -96,9 +234,16 @@ export async function runScrapePipeline(
     HARD_MAX_PER_STORE
   );
   const useFirecrawl = options.useFirecrawl ?? true;
+  const concurrency = clamp(
+    Math.trunc(options.concurrency ?? DEFAULT_CONCURRENCY),
+    1,
+    3
+  );
 
   log("🛒  RegateoApp · scrape de tiendas panameñas");
-  log(`    max por tienda: ${maxPerStore} · firecrawl: ${useFirecrawl ? "sí" : "no"}`);
+  log(
+    `    max por tienda: ${maxPerStore} · firecrawl: ${useFirecrawl ? "sí" : "no"} · tiendas en paralelo: ${concurrency}`
+  );
 
   await ensureStoresSeeded();
 
@@ -106,8 +251,7 @@ export async function runScrapePipeline(
   const storeRows = await db.select({ id: stores.id, slug: stores.slug }).from(stores);
   const storeIds = new Map(storeRows.map((row) => [row.slug, row.id]));
 
-  const firecrawl = getFirecrawlClient({ verbose: false });
-  const firecrawlStatus = firecrawl.status();
+  const firecrawlStatus = getFirecrawlClient({ verbose: false }).status();
   log(
     `    firecrawl: ${firecrawlStatus.mode}${
       firecrawlStatus.mode === "cli" ? " (CLI autenticado)" : ""
@@ -115,91 +259,36 @@ export async function runScrapePipeline(
   );
 
   const summaries: ScrapeRunSummary[] = [];
+  const queue = targets.map((store, index) => ({
+    store,
+    position: `[${index + 1}/${targets.length}]`,
+  }));
 
-  for (const [index, store] of targets.entries()) {
-    const position = `[${index + 1}/${targets.length}]`;
-    const adapter = createStoreAdapter(store);
-    const storeId = storeIds.get(store.slug) ?? null;
-
-    const [run] = await db
-      .insert(scrapeRuns)
-      .values({
-        storeId,
-        storeSlug: store.slug,
-        engine: adapter.engine,
-        status: "running",
-        startedAt: new Date(),
-      })
-      .returning({ id: scrapeRuns.id });
-
-    const runId = run?.id ?? crypto.randomUUID();
-    log(`\n${position} ${store.name} (${store.slug}) · ${adapter.engine}`);
-
-    try {
-      const items = await withTimeout(
-        adapter.scrape({ store, maxPerStore, useFirecrawl, log }),
-        STORE_TIMEOUT_MS,
-        `${store.name} scrape`
+  // Worker pool: 2–3 stores scrape in parallel; ingestion is serialized.
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    for (;;) {
+      const next = queue.shift();
+      if (!next) break;
+      const summary = await runSingleStore(
+        {
+          store: next.store,
+          position: next.position,
+          adapter: createStoreAdapter(next.store),
+          storeId: storeIds.get(next.store.slug) ?? null,
+          log,
+        },
+        { maxPerStore, useFirecrawl }
       );
-
-      let itemsUpserted = 0;
-      let skipped = 0;
-      if (items.length > 0) {
-        const result = await ingestScrapedItems(store.slug, items, adapter.engine);
-        itemsUpserted = result.itemsUpserted;
-        skipped = result.skipped;
-      }
-
-      await db
-        .update(scrapeRuns)
-        .set({
-          status: "completed",
-          itemsFound: items.length,
-          itemsUpserted,
-          finishedAt: new Date(),
-        })
-        .where(eq(scrapeRuns.id, runId));
-
-      summaries.push({
-        runId,
-        storeSlug: store.slug,
-        engine: adapter.engine,
-        status: "completed",
-        itemsFound: items.length,
-        itemsUpserted,
-      });
-
-      log(
-        `    ✅ ${items.length} encontrados · ${itemsUpserted} guardados${
-          skipped > 0 ? ` · ${skipped} omitidos` : ""
-        }`
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      await db
-        .update(scrapeRuns)
-        .set({
-          status: "failed",
-          errorMessage: message.slice(0, 2000),
-          finishedAt: new Date(),
-        })
-        .where(eq(scrapeRuns.id, runId))
-        .catch(() => undefined);
-
-      summaries.push({
-        runId,
-        storeSlug: store.slug,
-        engine: adapter.engine,
-        status: "failed",
-        itemsFound: 0,
-        itemsUpserted: 0,
-        errorMessage: message,
-      });
-
-      log(`    ❌ ${store.name} falló: ${message}`);
+      summaries.push(summary);
     }
-  }
+  });
+  await Promise.all(workers);
+
+  summaries.sort(
+    (a, b) =>
+      targets.findIndex((store) => store.slug === a.storeSlug) -
+      targets.findIndex((store) => store.slug === b.storeSlug)
+  );
 
   // ---- Phase 2: cross-store model enrichment ------------------------------
   if (options.enrich !== false && Number.isFinite(ENRICH_LIMIT) && ENRICH_LIMIT > 0) {
@@ -231,19 +320,27 @@ export async function runScrapePipeline(
     }
   }
 
+  // ---- Phase 3: real price alerts -----------------------------------------
+  try {
+    await evaluateAndDispatchPriceAlerts(log);
+  } catch (error) {
+    log(`  ⚠️  Motor de alertas falló: ${(error as Error).message}`);
+  }
+
   const totals = summaries.reduce(
     (accumulator, summary) => {
       accumulator.itemsFound += summary.itemsFound;
       accumulator.itemsUpserted += summary.itemsUpserted;
       if (summary.status === "completed") accumulator.completed += 1;
       else accumulator.failed += 1;
+      if (summary.healthWarning) accumulator.warnings += 1;
       return accumulator;
     },
-    { itemsFound: 0, itemsUpserted: 0, completed: 0, failed: 0 }
+    { itemsFound: 0, itemsUpserted: 0, completed: 0, failed: 0, warnings: 0 }
   );
 
   log(
-    `\n📦  Total: ${totals.itemsUpserted} productos guardados de ${totals.itemsFound} encontrados · ${totals.completed} tiendas OK · ${totals.failed} con error · ${(
+    `\n📦  Total: ${totals.itemsUpserted} productos guardados de ${totals.itemsFound} encontrados · ${totals.completed} tiendas OK · ${totals.failed} con error · ${totals.warnings} avisos de salud · ${(
       (Date.now() - startedAt) / 1000
     ).toFixed(1)}s`
   );

@@ -37,6 +37,8 @@ export function PriceAlertForm({
   const [captcha, setCaptcha] = useState<CaptchaHeaders | null>(null);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+  const [confirmUrl, setConfirmUrl] = useState<string | null>(null);
 
   const setActiveView = useFilterStore((s) => s.setActiveView);
   const closeProduct = useFilterStore((s) => s.closeProduct);
@@ -68,6 +70,8 @@ export function PriceAlertForm({
     setValue("targetPriceCents", suggestedCents);
     setUsdDisplay((suggestedCents / 100).toFixed(2));
     setSavedTargetCents(null);
+    setAwaitingConfirmation(false);
+    setConfirmUrl(null);
     setLocalError(null);
     setCaptcha(null);
     setCaptchaResetKey((k) => k + 1);
@@ -86,10 +90,18 @@ export function PriceAlertForm({
     }) => createPriceAlert(vars.values, vars.captcha),
     onSuccess: (res) => {
       setLocalError(null);
-      setSavedTargetCents(res.alert.targetPriceCents);
       setCaptcha(null);
       setCaptchaResetKey((k) => k + 1);
       void queryClient.invalidateQueries({ queryKey: USER_OVERVIEW_QUERY_KEY });
+      if (res.requiresConfirmation) {
+        setSavedTargetCents(null);
+        setAwaitingConfirmation(true);
+        setConfirmUrl(res.confirmUrl ?? null);
+      } else {
+        setAwaitingConfirmation(false);
+        setConfirmUrl(null);
+        setSavedTargetCents(res.alert?.targetPriceCents ?? null);
+      }
     },
     onError: () => {
       setCaptcha(null);
@@ -142,7 +154,27 @@ export function PriceAlertForm({
         </div>
       </div>
 
-      {savedTargetCents !== null ? (
+      {awaitingConfirmation ? (
+        <div className="mt-4 rounded-lg border border-[#A7F3D0] bg-[#ECFDF5] px-3.5 py-3 text-xs text-[#047857]">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            <span>
+              Te enviamos un enlace de confirmación a tu correo para activar esta
+              alerta (doble verificación anti-spam).
+            </span>
+          </div>
+          {confirmUrl ? (
+            <a
+              href={confirmUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-block font-semibold underline cursor-pointer"
+            >
+              Confirmar ahora (solo en desarrollo) →
+            </a>
+          ) : null}
+        </div>
+      ) : savedTargetCents !== null ? (
         <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-[#A7F3D0] bg-[#ECFDF5] px-3.5 py-3 text-xs text-[#047857]">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 shrink-0" />

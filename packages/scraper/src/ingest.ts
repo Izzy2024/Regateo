@@ -1,4 +1,5 @@
 import {
+  and,
   db,
   desc,
   eq,
@@ -200,6 +201,8 @@ interface ProcessedListing {
   listingId: string;
   priceCents: number;
   inStock: boolean;
+  /** True when price or stock differs from what the DB had before this run. */
+  changed: boolean;
 }
 
 /**
@@ -210,7 +213,8 @@ interface ProcessedListing {
 export async function ingestScrapedItems(
   storeSlug: string,
   items: RawScrapedItem[],
-  engine: ScrapeEngine
+  engine: ScrapeEngine,
+  options: { signal?: AbortSignal } = {}
 ): Promise<IngestResult> {
   const [storeRow] = await db
     .select({ id: stores.id })
@@ -223,6 +227,14 @@ export async function ingestScrapedItems(
   }
 
   const storeId = storeRow.id;
+
+  // Health baseline for the stale-listing sweep (never nuke data on a bad run).
+  const [previousCountRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(storeListings)
+    .where(eq(storeListings.storeId, storeId));
+  const previousListings = Number(previousCountRow?.count ?? 0);
+
   const registry = await loadSlugRegistry();
   const groups = groupByMatchKey(items);
   const now = new Date();
@@ -235,6 +247,7 @@ export async function ingestScrapedItems(
 
   const processed: ProcessedListing[] = [];
   const productIds: string[] = [];
+  const changedProductIds = new Set<string>();
   let skipped = 0;
 
   const productValues = (entry: PreparedItem) => ({
@@ -268,6 +281,7 @@ export async function ingestScrapedItems(
   const productBatches = chunk(prepared, PRODUCT_BATCH_SIZE);
 
   for (const [batchIndex, batch] of productBatches.entries()) {
+    if (options.signal?.aborted) break;
     let productIdsByKey = new Map<string, string>();
 
     try {
@@ -277,14 +291,15 @@ export async function ingestScrapedItems(
         .onConflictDoUpdate({
           target: products.matchKey,
           set: {
-            canonicalName: sql`excluded.canonical_name`,
-            brand: sql`excluded.brand`,
-            modelNumber: sql`excluded.model_number`,
-            category: sql`excluded.category`,
-            imageUrl: sql`coalesce(excluded.image_url, ${products.imageUrl})`,
-            specs: sql`excluded.specs`,
+            // Never let the last store that ran overwrite better metadata.
+            canonicalName: sql`CASE WHEN length(${products.canonicalName}) >= length(excluded.canonical_name) THEN ${products.canonicalName} ELSE excluded.canonical_name END`,
+            brand: sql`COALESCE(${products.brand}, excluded.brand)`,
+            modelNumber: sql`COALESCE(${products.modelNumber}, excluded.model_number)`,
+            category: sql`CASE WHEN excluded.category <> 'accesorios' THEN excluded.category ELSE ${products.category} END`,
+            imageUrl: sql`COALESCE(${products.imageUrl}, excluded.image_url)`,
+            specs: sql`COALESCE(${products.specs}, '{}'::jsonb) || excluded.specs`,
             embeddingText: sql`excluded.embedding_text`,
-            updatedAt: sql`excluded.updated_at`,
+            // `updated_at` is bumped only when a price or stock really changed.
           },
         })
         .returning({ id: products.id, matchKey: products.matchKey });
@@ -303,14 +318,13 @@ export async function ingestScrapedItems(
             .onConflictDoUpdate({
               target: products.matchKey,
               set: {
-                canonicalName: sql`excluded.canonical_name`,
-                brand: sql`excluded.brand`,
-                modelNumber: sql`excluded.model_number`,
-                category: sql`excluded.category`,
-                imageUrl: sql`coalesce(excluded.image_url, ${products.imageUrl})`,
-                specs: sql`excluded.specs`,
+                canonicalName: sql`CASE WHEN length(${products.canonicalName}) >= length(excluded.canonical_name) THEN ${products.canonicalName} ELSE excluded.canonical_name END`,
+                brand: sql`COALESCE(${products.brand}, excluded.brand)`,
+                modelNumber: sql`COALESCE(${products.modelNumber}, excluded.model_number)`,
+                category: sql`CASE WHEN excluded.category <> 'accesorios' THEN excluded.category ELSE ${products.category} END`,
+                imageUrl: sql`COALESCE(${products.imageUrl}, excluded.image_url)`,
+                specs: sql`COALESCE(${products.specs}, '{}'::jsonb) || excluded.specs`,
                 embeddingText: sql`excluded.embedding_text`,
-                updatedAt: sql`excluded.updated_at`,
               },
             })
             .returning({ id: products.id, matchKey: products.matchKey });
@@ -321,8 +335,9 @@ export async function ingestScrapedItems(
       }
     }
 
-    // ---- Cross-store price sanity guard ---------------------------------
+    // ---- Cross-store price sanity guard + change detection ---------------
     const existingByProduct = new Map<string, Array<{ storeId: string; priceCents: number }>>();
+    const existingInternal = new Map<string, { priceCents: number; inStock: boolean }>();
     const productIdsInBatch = [...new Set(productIdsByKey.values())];
     for (const ids of chunk(productIdsInBatch, HISTORY_READ_BATCH)) {
       if (ids.length === 0) continue;
@@ -330,7 +345,9 @@ export async function ingestScrapedItems(
         .select({
           productId: storeListings.productId,
           storeId: storeListings.storeId,
+          externalId: storeListings.externalId,
           priceCents: storeListings.priceCents,
+          inStock: storeListings.inStock,
         })
         .from(storeListings)
         .where(inArray(storeListings.productId, ids));
@@ -338,6 +355,12 @@ export async function ingestScrapedItems(
         const list = existingByProduct.get(row.productId) ?? [];
         list.push({ storeId: row.storeId, priceCents: row.priceCents });
         existingByProduct.set(row.productId, list);
+        if (row.storeId === storeId) {
+          existingInternal.set(row.externalId, {
+            priceCents: row.priceCents,
+            inStock: row.inStock,
+          });
+        }
       }
     }
 
@@ -371,14 +394,13 @@ export async function ingestScrapedItems(
           .onConflictDoUpdate({
             target: products.matchKey,
             set: {
-              canonicalName: sql`excluded.canonical_name`,
-              brand: sql`excluded.brand`,
-              modelNumber: sql`excluded.model_number`,
-              category: sql`excluded.category`,
-              imageUrl: sql`coalesce(excluded.image_url, ${products.imageUrl})`,
-              specs: sql`excluded.specs`,
+              canonicalName: sql`CASE WHEN length(${products.canonicalName}) >= length(excluded.canonical_name) THEN ${products.canonicalName} ELSE excluded.canonical_name END`,
+              brand: sql`COALESCE(${products.brand}, excluded.brand)`,
+              modelNumber: sql`COALESCE(${products.modelNumber}, excluded.model_number)`,
+              category: sql`CASE WHEN excluded.category <> 'accesorios' THEN excluded.category ELSE ${products.category} END`,
+              imageUrl: sql`COALESCE(${products.imageUrl}, excluded.image_url)`,
+              specs: sql`COALESCE(${products.specs}, '{}'::jsonb) || excluded.specs`,
               embeddingText: sql`excluded.embedding_text`,
-              updatedAt: sql`excluded.updated_at`,
             },
           })
           .returning({ id: products.id });
@@ -437,10 +459,17 @@ export async function ingestScrapedItems(
           continue;
         }
         productIds.push(productId);
+        const previous = existingInternal.get(entry.item.externalId);
+        const changed =
+          !previous ||
+          previous.priceCents !== entry.item.priceCents ||
+          previous.inStock !== entry.item.inStock;
+        if (changed) changedProductIds.add(productId);
         processed.push({
           listingId,
           priceCents: entry.item.priceCents,
           inStock: entry.item.inStock,
+          changed,
         });
       }
     } catch (error) {
@@ -475,10 +504,17 @@ export async function ingestScrapedItems(
             continue;
           }
           productIds.push(productId);
+          const previous = existingInternal.get(entry.item.externalId);
+          const changed =
+            !previous ||
+            previous.priceCents !== entry.item.priceCents ||
+            previous.inStock !== entry.item.inStock;
+          if (changed) changedProductIds.add(productId);
           processed.push({
             listingId: row.id,
             priceCents: entry.item.priceCents,
             inStock: entry.item.inStock,
+            changed,
           });
         } catch (itemError) {
           skipped += 1;
@@ -500,7 +536,10 @@ export async function ingestScrapedItems(
 
   // ---- Price history snapshots -------------------------------------------
   if (processed.length > 0) {
-    const lastSnapshots = new Map<string, { priceCents: number; recordedAt: Date }>();
+    const lastSnapshots = new Map<
+      string,
+      { priceCents: number; inStock: boolean; recordedAt: Date }
+    >();
 
     for (const ids of chunk(
       processed.map((entry) => entry.listingId),
@@ -510,6 +549,7 @@ export async function ingestScrapedItems(
         .select({
           listingId: priceHistory.listingId,
           priceCents: priceHistory.priceCents,
+          inStock: priceHistory.inStock,
           recordedAt: priceHistory.recordedAt,
         })
         .from(priceHistory)
@@ -520,6 +560,7 @@ export async function ingestScrapedItems(
         if (!lastSnapshots.has(row.listingId)) {
           lastSnapshots.set(row.listingId, {
             priceCents: row.priceCents,
+            inStock: row.inStock,
             recordedAt: row.recordedAt,
           });
         }
@@ -530,6 +571,7 @@ export async function ingestScrapedItems(
       const last = lastSnapshots.get(entry.listingId);
       if (!last) return true;
       if (last.priceCents !== entry.priceCents) return true;
+      if (last.inStock !== entry.inStock) return true;
       return now.getTime() - last.recordedAt.getTime() >= HISTORY_MIN_INTERVAL_MS;
     });
 
@@ -542,6 +584,59 @@ export async function ingestScrapedItems(
           inStock: entry.inStock,
           recordedAt: now,
         }))
+      );
+    }
+  }
+
+  // ---- Bump product freshness only when a price/stock really changed -----
+  if (changedProductIds.size > 0) {
+    for (const ids of chunk([...changedProductIds], HISTORY_READ_BATCH)) {
+      await db.update(products).set({ updatedAt: now }).where(inArray(products.id, ids));
+    }
+  }
+
+  // ---- Mark retired / sold-out listings -----------------------------------
+  const healthyRun =
+    items.length >= 50 && (previousListings === 0 || items.length >= previousListings * 0.6);
+
+  if (!healthyRun && items.length >= 50 && previousListings > 0) {
+    console.warn(
+      `  ⚠️  ${storeSlug}: corrida incompleta (${items.length}/${previousListings} listings, <60%); no se marcan agotados`
+    );
+  }
+
+  if (healthyRun && !options.signal?.aborted) {
+    const seenExternalIds = [...new Set(items.map((item) => item.externalId))];
+    // drizzle expands a JS array into a parameter list, so build a real ARRAY[].
+    const seenArray = sql`ARRAY[${sql.join(
+      seenExternalIds.map((externalId) => sql`${externalId}`),
+      sql`, `
+    )}]::text[]`;
+    const stale = await db
+      .update(storeListings)
+      .set({ inStock: false, updatedAt: now })
+      .where(
+        and(
+          eq(storeListings.storeId, storeId),
+          eq(storeListings.inStock, true),
+          sql`${storeListings.externalId} <> ALL(${seenArray})`
+        )
+      )
+      .returning({ id: storeListings.id, priceCents: storeListings.priceCents });
+
+    if (stale.length > 0) {
+      for (const batch of chunk(stale, HISTORY_WRITE_BATCH)) {
+        await db.insert(priceHistory).values(
+          batch.map((row) => ({
+            listingId: row.id,
+            priceCents: row.priceCents,
+            inStock: false,
+            recordedAt: now,
+          }))
+        );
+      }
+      console.log(
+        `  🚫 ${storeSlug}: ${stale.length} listings retirados/agotados marcados fuera de stock`
       );
     }
   }

@@ -9,6 +9,9 @@
   "scripts": {
     "scrape": "bun src/cli.ts",
     "schedule": "bun src/scheduler.ts",
+    "alerts:check": "bun src/alerts.ts",
+    "cleanup": "bun src/cleanup.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

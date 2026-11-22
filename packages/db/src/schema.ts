@@ -224,6 +224,9 @@ export const priceAlerts = pgTable(
     email: varchar("email", { length: 255 }).notNull(),
     targetPriceCents: integer("target_price_cents").notNull(),
     active: boolean("active").notNull().default(true),
+    verified: boolean("verified").notNull().default(false),
+    confirmToken: varchar("confirm_token", { length: 96 }),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -232,6 +235,7 @@ export const priceAlerts = pgTable(
     index("price_alerts_user_id_idx").on(table.userId),
     index("price_alerts_email_idx").on(table.email),
     index("price_alerts_active_idx").on(table.active),
+    index("price_alerts_confirm_token_idx").on(table.confirmToken),
   ]
 );
 
@@ -290,5 +294,67 @@ export const userListItems = pgTable(
     uniqueIndex("user_list_items_list_product_uidx").on(table.listId, table.productId),
     index("user_list_items_list_id_idx").on(table.listId),
     index("user_list_items_product_id_idx").on(table.productId),
+  ]
+);
+
+export const outboundClicks = pgTable(
+  "outbound_clicks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => storeListings.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    storeSlug: varchar("store_slug", { length: 64 }).notNull(),
+    source: varchar("source", { length: 32 }).notNull().default("card"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("outbound_clicks_listing_id_idx").on(table.listingId),
+    index("outbound_clicks_product_id_idx").on(table.productId),
+    index("outbound_clicks_store_id_idx").on(table.storeId),
+    index("outbound_clicks_created_at_idx").on(table.createdAt),
+  ]
+);
+
+export const priceReports = pgTable(
+  "price_reports",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => storeListings.id, { onDelete: "cascade" }),
+    reason: varchar("reason", { length: 32 }).notNull(),
+    details: varchar("details", { length: 300 }),
+    status: varchar("status", { length: 24 }).notNull().default("open"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("price_reports_product_id_idx").on(table.productId),
+    index("price_reports_listing_id_idx").on(table.listingId),
+    index("price_reports_status_idx").on(table.status),
+  ]
+);
+
+export const searchEvents = pgTable(
+  "search_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    query: varchar("query", { length: 200 }).notNull(),
+    category: varchar("category", { length: 48 }),
+    resultsCount: integer("results_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("search_events_created_at_idx").on(table.createdAt),
+    index("search_events_query_idx").on(table.query),
   ]
 );

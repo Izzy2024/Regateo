@@ -31,7 +31,10 @@ import type {
   UserAlertDTO,
   UserOverviewDTO,
 } from "@regateo/shared";
-import { bestPriceForProduct, hydrateProductSummaries } from "./catalog";
+import {
+  bestPriceForProduct,
+  hydrateProductSummaries,
+} from "./catalog";
 
 export interface MeUser {
   id: string;
@@ -49,6 +52,65 @@ function alertOwnerFilter(user: MeUser) {
     eq(priceAlerts.userId, user.id),
     sql`lower(${priceAlerts.email}) = ${user.email.toLowerCase()}`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Alertas del usuario hidratadas (reusable por overview y GET /api/alerts)
+// ---------------------------------------------------------------------------
+export async function listUserAlerts(user: MeUser): Promise<UserAlertDTO[]> {
+  const alertRows = await db
+    .select()
+    .from(priceAlerts)
+    .where(alertOwnerFilter(user))
+    .orderBy(desc(priceAlerts.createdAt))
+    .limit(100);
+
+  const summaries = await hydrateProductSummaries(
+    alertRows.map((row) => row.productId)
+  );
+  const missingIds = alertRows
+    .map((row) => row.productId)
+    .filter((id) => !summaries.has(id));
+  const minimalRows =
+    missingIds.length > 0
+      ? await db
+          .select({
+            id: products.id,
+            slug: products.slug,
+            canonicalName: products.canonicalName,
+            brand: products.brand,
+            imageUrl: products.imageUrl,
+          })
+          .from(products)
+          .where(inArray(products.id, missingIds))
+      : [];
+  const minimalById = new Map(minimalRows.map((row) => [row.id, row]));
+
+  return alertRows.map((row) => {
+    const summary = summaries.get(row.productId);
+    const minimal = minimalById.get(row.productId);
+    const currentBest = summary?.bestPriceCents ?? null;
+    return {
+      id: row.id,
+      productId: row.productId,
+      email: row.email,
+      targetPriceCents: row.targetPriceCents,
+      active: row.active,
+      createdAt: toIso(row.createdAt),
+      reachedTarget:
+        currentBest !== null && currentBest <= row.targetPriceCents && row.active,
+      product: {
+        id: row.productId,
+        slug: summary?.slug ?? minimal?.slug ?? "",
+        canonicalName: summary?.canonicalName ?? minimal?.canonicalName ?? "",
+        brand: summary?.brand ?? minimal?.brand ?? null,
+        imageUrl: summary?.imageUrl ?? minimal?.imageUrl ?? null,
+        currentBestPriceCents: currentBest,
+        bestStoreName: summary?.bestStore?.name ?? null,
+        bestStoreUrl: summary?.bestStore?.url ?? null,
+      },
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -87,25 +149,6 @@ export async function getUserOverview(user: MeUser): Promise<UserOverviewDTO> {
   ]);
   const summaries = await hydrateProductSummaries([...allProductIds]);
 
-  // Productos sin listings (descatalogados) aún tienen datos mínimos para alertas
-  const missingIds = alertRows
-    .map((row) => row.productId)
-    .filter((id) => !summaries.has(id));
-  const minimalRows =
-    missingIds.length > 0
-      ? await db
-          .select({
-            id: products.id,
-            slug: products.slug,
-            canonicalName: products.canonicalName,
-            brand: products.brand,
-            imageUrl: products.imageUrl,
-          })
-          .from(products)
-          .where(inArray(products.id, missingIds))
-      : [];
-  const minimalById = new Map(minimalRows.map((row) => [row.id, row]));
-
   // ---- Favoritos con delta de precio desde que se guardaron
   const favorites: FavoriteProductDTO[] = [];
   for (const row of favoriteRows) {
@@ -123,10 +166,9 @@ export async function getUserOverview(user: MeUser): Promise<UserOverviewDTO> {
     });
   }
 
-  // ---- Alertas con reachedTarget
+  // ---- Alertas con reachedTarget (misma forma que listUserAlerts)
   const alerts: UserAlertDTO[] = alertRows.map((row) => {
     const summary = summaries.get(row.productId);
-    const minimal = minimalById.get(row.productId);
     const currentBest = summary?.bestPriceCents ?? null;
     return {
       id: row.id,
@@ -139,10 +181,10 @@ export async function getUserOverview(user: MeUser): Promise<UserOverviewDTO> {
         currentBest !== null && currentBest <= row.targetPriceCents && row.active,
       product: {
         id: row.productId,
-        slug: summary?.slug ?? minimal?.slug ?? "",
-        canonicalName: summary?.canonicalName ?? minimal?.canonicalName ?? "",
-        brand: summary?.brand ?? minimal?.brand ?? null,
-        imageUrl: summary?.imageUrl ?? minimal?.imageUrl ?? null,
+        slug: summary?.slug ?? "",
+        canonicalName: summary?.canonicalName ?? "",
+        brand: summary?.brand ?? null,
+        imageUrl: summary?.imageUrl ?? null,
         currentBestPriceCents: currentBest,
         bestStoreName: summary?.bestStore?.name ?? null,
         bestStoreUrl: summary?.bestStore?.url ?? null,

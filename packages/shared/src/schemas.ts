@@ -219,14 +219,15 @@ export const productSearchQuerySchema = z.object({
     .optional(),
   sort: z
     .enum([
+      "relevance",
+      "most-stores",
       "best-savings",
       "price-asc",
       "price-desc",
-      "most-stores",
       "recent",
     ])
-    .default("best-savings"),
-  page: z.coerce.number().int().min(1).default(1),
+    .default("most-stores"),
+  page: z.coerce.number().int().min(1).max(50).default(1),
   limit: z.coerce.number().int().min(1).max(60).default(24),
 });
 
@@ -239,6 +240,15 @@ export const createPriceAlertSchema = z.object({
 });
 
 export type CreatePriceAlertInput = z.infer<typeof createPriceAlertSchema>;
+
+export const reportWrongPriceSchema = z.object({
+  productId: z.string().uuid(),
+  listingId: z.string().uuid(),
+  reason: z.enum(["wrong-price", "out-of-stock", "wrong-match", "broken-link"]),
+  details: z.string().trim().max(300).optional(),
+});
+
+export type ReportWrongPriceInput = z.infer<typeof reportWrongPriceSchema>;
 
 export const triggerScrapeSchema = z.object({
   stores: z.array(z.string().min(1)).optional(),
@@ -253,12 +263,12 @@ export const aiChatRequestSchema = z.object({
     .array(
       z.object({
         id: z.string().optional(),
-        role: z.enum(["user", "assistant", "system"]),
-        content: z.string().min(1).max(2000),
+        role: z.enum(["user", "assistant"]),
+        content: z.string().min(1).max(1500),
       })
     )
     .min(1)
-    .max(30),
+    .max(12),
 });
 
 export type AiChatRequest = z.infer<typeof aiChatRequestSchema>;
@@ -311,8 +321,13 @@ export interface ProductSummaryDTO {
   imageUrl: string | null;
   bestPriceCents: number;
   highestPriceCents: number;
+  /** Ahorro verificable entre tiendas en stock (0 si solo hay 1 tienda con stock). */
   savingsCents: number;
+  /** Porcentaje de ahorro real entre tiendas (0..99%, nunca >100%). */
   savingsPercent: number;
+  /** Descuento anunciado por la tienda ganadora sobre su propio precio original (tope 65% si no está verificado). */
+  storeDiscountCents?: number;
+  storeDiscountPercent?: number;
   storeCount: number;
   inStockCount: number;
   bestStore: {
@@ -320,6 +335,8 @@ export interface ProductSummaryDTO {
     name: string;
     color: string;
     url: string;
+    listingId?: string;
+    inStock?: boolean;
   } | null;
   listings: StoreListingDTO[];
   updatedAt: string;

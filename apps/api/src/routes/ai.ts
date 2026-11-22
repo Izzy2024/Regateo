@@ -89,7 +89,7 @@ function sseResponse(handle: (send: (event: SseEvent) => void) => Promise<void>)
         });
         send({
           type: "error",
-          message: "Ocurrió un error procesando tu consulta. Intentá de nuevo.",
+          message: "Ocurrió un error procesando tu consulta. Intenta de nuevo.",
         });
       } finally {
         if (!closed) {
@@ -200,7 +200,11 @@ Reglas:
 // Handler principal
 // ---------------------------------------------------------------------------
 export function aiChatHandler(body: AiChatRequest): Response {
-  const messages = body.messages.map(({ id: _id, role, content }) => ({ role, content }));
+  // Auditoría #8: recorta el historial a los últimos 8 mensajes (la API acepta
+  // hasta 12) y nunca procesa rol "system" (lo garantiza aiChatRequestSchema).
+  const messages = body.messages
+    .map(({ id: _id, role, content }) => ({ role, content }))
+    .slice(-8);
   const userText = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
   const llm = resolveLlmConfig();
 
@@ -268,7 +272,7 @@ async function streamWithAiSdk(
         send({
           type: "error",
           message:
-            `El modelo de IA (${llm.provider}) no respondió. Verificá la API key o intentá de nuevo.`,
+            `El modelo de IA (${llm.provider}) no respondió. Verifica la API key o intenta de nuevo.`,
         });
         break;
       default:
@@ -356,7 +360,7 @@ export async function streamDeterministic(
         message: error instanceof Error ? error.message : "Error consultando la base de datos",
       },
     });
-    await streamTextOut(send, "Tuve un problema consultando el catálogo en este momento. Probá de nuevo en un rato. 🙏");
+    await streamTextOut(send, "Tuve un problema consultando el catálogo en este momento. Prueba de nuevo en un rato. 🙏");
     send({ type: "done" });
     return;
   }
@@ -385,7 +389,7 @@ function briefLine(item: AiProductBrief, index: number): string {
 
 function composeSearch(result: { total: number; items: AiProductBrief[] }): string {
   if (result.items.length === 0) {
-    return "No encontré ese producto en las tiendas monitoreadas todavía. Podés probar con otra palabra (por ejemplo: \"Smart TV 55\", \"Lavadora Samsung\" o \"Mouse Logitech\") o decirme la categoría y te muestro lo más barato de la semana. 🛒";
+    return "No encontré ese producto en las tiendas monitoreadas todavía. Puedes probar con otra palabra (por ejemplo: \"Smart TV 55\", \"Lavadora Samsung\" o \"Mouse Logitech\") o decirme la categoría y te muestro lo más barato de la semana. 🛒";
   }
   const intro =
     result.total > result.items.length
@@ -393,7 +397,7 @@ function composeSearch(result: { total: number; items: AiProductBrief[] }): stri
       : "Esto fue lo que encontré:";
   const lines = result.items.map(briefLine).join("\n");
   const outro =
-    "\nSi querés, decime cuál te llama la atención y te comparo precios entre todas las tiendas, o créale una alerta de precio desde la ficha del producto. 💪";
+    "\nSi quieres, dime cuál te llama la atención y te comparo precios entre todas las tiendas, o créale una alerta de precio desde la ficha del producto. 💪";
   return `${intro}\n${lines}${outro}`;
 }
 
@@ -404,7 +408,7 @@ function composeCompare(
     const suggestions = result.suggestions
       .map((item, index) => briefLine(item, index))
       .join("\n");
-    return `${result.message} Pero mira, esto es lo más parecido que encontré:\n${suggestions}\nSi es alguno de estos, decime cuál y te armo la comparación completa entre tiendas.`;
+    return `${result.message} Pero mira, esto es lo más parecido que encontré:\n${suggestions}\nSi es alguno de estos, dime cuál y te armo la comparación completa entre tiendas.`;
   }
   const { product } = result;
   const lines = product.listings
@@ -418,13 +422,13 @@ function composeCompare(
     })
     .join("\n");
   const brand = product.brand ? ` de ${product.brand}` : "";
-  return `Comparación real de "${product.name}"${brand} en las tiendas monitoreadas:\n${lines}\n\nMi recomendación: compralo en ${product.listings[0]?.store ?? "la tienda con mejor precio"} por ${product.bestPrice}. ${product.savings !== "$0.00" ? `Te ahorras ${product.savings} frente a la opción más cara. ` : ""}Los enlaces van directo al producto para que verifiques el precio antes de pagar. 😉`;
+  return `Comparación real de "${product.name}"${brand} en las tiendas monitoreadas:\n${lines}\n\nMi recomendación: cómpralo en ${product.listings[0]?.store ?? "la tienda con mejor precio"} por ${product.bestPrice}. ${product.savings !== "$0.00" ? `Te ahorras ${product.savings} frente a la opción más cara. ` : ""}Los enlaces van directo al producto para que verifiques el precio antes de pagar. 😉`;
 }
 
 function composeDeals(result: { items: AiProductBrief[] }): string {
   if (result.items.length === 0) {
-    return "Ahora mismo no tengo ofertas destacadas con ahorro comprobado entre tiendas. Volve a consultar en un par de días (actualizamos precios cada 3 días) o pedime un producto específico y te busco el precio más bajo. 🤙";
+    return "Ahora mismo no tengo ofertas destacadas con ahorro comprobado entre tiendas. Vuelve a consultar en un par de días (actualizamos precios cada 3 días) o pídeme un producto específico y te busco el precio más bajo. 🤙";
   }
   const lines = result.items.map(briefLine).join("\n");
-  return `Las mejores ofertas de electrónica en Panamá según nuestros datos más recientes:\n${lines}\nEstos precios se verifican contra las tiendas directamente, así que el enlace te lleva al producto real. ¿Querés que te compare alguno entre todas las tiendas?`;
+  return `Las mejores ofertas de electrónica en Panamá según nuestros datos más recientes:\n${lines}\nEstos precios se verifican contra las tiendas directamente, así que el enlace te lleva al producto real. ¿Quieres que te compare alguno entre todas las tiendas?`;
 }

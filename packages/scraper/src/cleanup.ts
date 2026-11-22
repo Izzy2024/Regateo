@@ -3,38 +3,24 @@ import { slugify } from "@regateo/shared";
 import { deriveIdentity } from "./matching";
 
 /**
- * One-off maintenance: separates products that the old family/token matcher
- * merged incorrectly (Sony BRAVIA 8 vs BRAVIA 2, Samsung 55" TV shelves, printer
- * vs toner, etc.).
+ * Re-agrupamiento completo de `regateoapp_dev` con el matcher estricto actual.
  *
- * A product is re-keyed listing-by-listing with a deterministic scoped key
- * `${matchKey}::${storeSlug}-${externalId}` when:
- *   - its match key is a legacy brand+size / brand+capacity family key,
- *   - its cross-store price ratio is above 2.2x,
- *   - it has two listings from the same store (impossible for a single product),
- *   - it has no trusted model code but listings from 2+ stores,
- *   - its "model" is actually an IP rating or the brand itself.
+ * Recalcula el `match_key` de los 13k+ listings existentes (sin re-scrapear),
+ * respeta el guardrail de precio 2.2x y vuelve a construir los productos:
  *
- * Run with: bun src/cleanup.ts
+ *   - un producto por (matchKey, cluster de precio ≤2.2x),
+ *   - máximo un listing por tienda dentro de un producto,
+ *   - listings sobrantes aislados con `${matchKey}::${storeSlug}-${externalId}`.
+ *
+ * Los productos existentes se reutilizan por `match_key` (conserva ids, slugs y
+ * favoritos/alertas); solo se borran huérfanos sin referencias.
+ *
+ * Ejecutar: `bun src/cleanup.ts` (desde packages/scraper)
  */
 
 const MAX_PRICE_RATIO = 2.2;
-
-const LEGACY_FAMILY_KEY =
-  /::(?:acc-)?(?:tv-\d+in|lavadora-|secadora-|refrigeradora-|congelador-|estufa-|horno-|microondas-|lavavajillas-|licuadora-|cafetera-|freidora-|aspiradora-|batidora-|tostadora-|arrocera-|olla-|plancha-|sandwichera-|ventilador-|aire-)/;
-
-const BAD_MODEL = /^(?:IPX?\d{1,2}|LED|OLED|QLED|SMART|HDMI|USB)$/i;
-
-interface ProductRow {
-  id: string;
-  matchKey: string;
-  canonicalName: string;
-  brand: string | null;
-  modelNumber: string | null;
-  category: string;
-  imageUrl: string | null;
-  specs: Record<string, unknown> | null;
-}
+const PRODUCT_BATCH = 120;
+const LISTING_BATCH = 400;
 
 interface ListingRow {
   id: string;
@@ -43,16 +29,35 @@ interface ListingRow {
   externalId: string;
   title: string;
   priceCents: number;
-  originalPriceCents: number | null;
   inStock: boolean;
-  url: string;
   imageUrl: string | null;
-  lastCheckedAt: Date;
+  /** Brand hint from the current product (title brands always win). */
+  brand: string | null;
+  /** API-provided model (PTYTEC/DoitCenter) when the title confirms it. */
+  modelNumber: string | null;
+}
+
+interface Cluster {
+  key: string;
+  listings: ListingRow[];
+  stores: Set<string>;
+  minPrice: number;
+  maxPrice: number;
+  /**
+   * A same-store duplicate (e.g. another color of the same iPhone) becomes a
+   * one-listing product: it must never absorb offers from other stores, which
+   * would create a fake comparison between two different colors.
+   */
+  isolated: boolean;
+}
+
+interface ProductRow {
+  id: string;
+  matchKey: string;
+  slug: string;
 }
 
 function shortHash(value: string): string {
-  // FNV-1a + sdbm: two independent 32-bit accumulators avoid the frequent
-  // collisions of a single weak hash (e.g. two near-identical SKUs).
   let fnv = 0x811c9dc5;
   let sdbm = 0x1000193;
   for (let index = 0; index < value.length; index += 1) {
@@ -60,307 +65,316 @@ function shortHash(value: string): string {
     fnv = Math.imul(fnv ^ code, 0x01000193) >>> 0;
     sdbm = (Math.imul(sdbm, 0x1000193) + code) >>> 0;
   }
-  return `${fnv.toString(36).padStart(7, "0")}${sdbm.toString(36).padStart(7, "0")}`.slice(-12);
+  return `${fnv.toString(36)}${sdbm.toString(36)}`.slice(0, 10);
 }
 
-function scopedKey(matchKey: string, storeSlug: string, externalId: string): string {
-  return `${matchKey}::${slugify(storeSlug)}-${slugify(externalId)}`.slice(0, 180);
+function scopedKey(baseKey: string, listing: ListingRow): string {
+  return `${baseKey}::${slugify(listing.storeSlug)}-${slugify(listing.externalId)}`.slice(0, 180);
 }
 
-function priceRatio(a: number, b: number): number {
-  const min = Math.min(a, b);
-  const max = Math.max(a, b);
-  return min > 0 ? max / min : Number.POSITIVE_INFINITY;
+function ratioFits(cluster: Cluster, priceCents: number): boolean {
+  const min = Math.min(cluster.minPrice, priceCents);
+  const max = Math.max(cluster.maxPrice, priceCents);
+  return min > 0 && max / min <= MAX_PRICE_RATIO;
 }
 
-/** Detailed SKU-like codes inside a title (FA506NF-HN005W, 15-FC0287LA, …). */
-function detailedModelCodes(title: string): string[] {
-  const upper = title.toUpperCase();
-  const candidates = upper.match(/[A-Z0-9][A-Z0-9_.-]{4,}/g) ?? [];
-  return candidates.filter(
-    (token) =>
-      /[A-Z]/.test(token) &&
-      /\d/.test(token) &&
-      (token.includes("-") || token.length >= 8) &&
-      !/^\d+$/.test(token)
-  );
-}
-
-function suspicionReason(product: ProductRow, listings: ListingRow[]): string | null {
-  // Already isolated by a previous cleanup/guardrail run.
-  if (product.matchKey.split("::").length > 2) return null;
-  if (product.specs && typeof product.specs.splitFrom === "string") return null;
-
-  if (LEGACY_FAMILY_KEY.test(product.matchKey)) return "legacy-family-key";
-
-  const storeIds = new Set(listings.map((listing) => listing.storeId));
-  const prices = listings.map((listing) => listing.priceCents);
-  const ratio = Math.max(...prices) / Math.min(...prices);
-  if (ratio > MAX_PRICE_RATIO) return `price-ratio-${ratio.toFixed(2)}`;
-
-  if (listings.length > storeIds.size) return "same-store-duplicates";
-
-  if (!product.modelNumber && storeIds.size >= 2) return "no-model-signature";
-
-  if (product.modelNumber) {
-    // Same series token but different detailed SKU (A15 vs FA506NF-HN005W).
-    const codes = new Set(listings.flatMap((listing) => detailedModelCodes(listing.title)));
-    if (codes.size > 1) return "different-model-codes";
-
-    // Same model but listings expose different variants (RAM/storage/size/panel).
-    const variantKeys = new Set(
-      listings.map(
-        (listing) =>
-          deriveIdentity({
-            title: listing.title,
-            vendor: product.brand,
-            storeSlug: listing.storeSlug,
-            modelNumber: product.modelNumber,
-          }).matchKey
-      )
-    );
-    if (variantKeys.size > 1) return "variant-mismatch";
-
-    if (BAD_MODEL.test(product.modelNumber)) return "spec-as-model";
-    if (
-      product.brand &&
-      product.modelNumber.toLowerCase().replace(/[^a-z0-9]/g, "") ===
-        product.brand.toLowerCase().replace(/[^a-z0-9]/g, "")
-    ) {
-      return "brand-as-model";
-    }
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
   }
-
-  return null;
+  return chunks;
 }
 
-/**
- * Scoped products inherit the (possibly wrong) metadata of the merged product
- * they were split from. Recompute name/brand/model/category/specs from the
- * real listing title so "Sony BRAVIA 8 OLED 65\"" is not labelled "BRAVIA 2".
- */
-async function repairScopedMetadata(): Promise<number> {
-  const rows = await db
-    .select({
-      productId: products.id,
-      matchKey: products.matchKey,
-      specs: products.specs,
-      listingTitle: storeListings.titleAtStore,
-      storeSlug: stores.slug,
-      imageUrl: storeListings.imageUrl,
-    })
-    .from(products)
-    .innerJoin(storeListings, eq(storeListings.productId, products.id))
-    .innerJoin(stores, eq(stores.id, storeListings.storeId))
-    .where(sql`length(${products.matchKey}) - length(replace(${products.matchKey}, '::', '')) >= 4`);
-
-  const byProduct = new Map<string, typeof rows>();
-  for (const row of rows) {
-    const list = byProduct.get(row.productId) ?? [];
-    list.push(row);
-    byProduct.set(row.productId, list);
+function slugFor(identityName: string, key: string, taken: Map<string, string>): string {
+  const base = slugify(identityName).slice(0, 118) || "producto";
+  let slug = `${base}-${shortHash(key)}`;
+  let attempt = 0;
+  while (taken.has(slug) && taken.get(slug) !== key && attempt < 5) {
+    attempt += 1;
+    slug = `${base.slice(0, 100)}-${shortHash(`${key}:${attempt}`)}`;
   }
+  taken.set(slug, key);
+  return slug;
+}
 
-  let repaired = 0;
-  for (const list of byProduct.values()) {
-    if (list.length !== 1) continue;
-    const row = list[0]!;
-    const identity = deriveIdentity({ title: row.listingTitle, storeSlug: row.storeSlug });
-    const specs = {
-      ...(row.specs ?? {}),
-      ...identity.specs,
-      metadataRepairedAt: new Date().toISOString(),
-    };
+async function countMultiStore(): Promise<number> {
+  const rows = await db.execute<{ count: number }>(sql`
+    SELECT count(*)::int AS count FROM (
+      SELECT product_id FROM store_listings
+      GROUP BY product_id HAVING count(DISTINCT store_id) >= 2
+    ) x
+  `);
+  return Number((Array.from(rows as unknown as Array<{ count: number }>)[0]?.count ?? 0));
+}
 
-    await db
-      .update(products)
-      .set({
-        canonicalName: identity.canonicalName,
-        brand: identity.brand,
-        modelNumber: identity.modelNumber,
-        category: identity.category,
-        imageUrl: row.imageUrl ?? undefined,
-        specs,
-        embeddingText: [identity.brand, identity.canonicalName, identity.category, row.listingTitle]
-          .filter(Boolean)
-          .join(" | ")
-          .slice(0, 1200),
-        updatedAt: new Date(),
-      })
-      .where(eq(products.id, row.productId));
-
-    repaired += 1;
-    if (repaired % 250 === 0) console.log(`   … ${repaired} productos scoped reparados`);
-  }
-
-  return repaired;
+async function countMultiByCategory(category: string): Promise<number> {
+  const rows = await db.execute<{ count: number }>(sql`
+    SELECT count(*)::int AS count FROM (
+      SELECT p.id FROM products p
+      JOIN store_listings sl ON sl.product_id = p.id
+      WHERE p.category = ${category}
+      GROUP BY p.id HAVING count(DISTINCT sl.store_id) >= 2
+    ) x
+  `);
+  return Number((Array.from(rows as unknown as Array<{ count: number }>)[0]?.count ?? 0));
 }
 
 async function main(): Promise<void> {
-  console.log("🧹 Limpieza de fusiones falsas en regateoapp_dev");
+  console.log("🧹 Re-agrupamiento estricto de regateoapp_dev");
 
+  const before = {
+    products: Number(
+      (
+        await db.execute<{ count: number }>(sql`SELECT count(*)::int AS count FROM products`)
+      )[0]?.count ?? 0
+    ),
+    listings: Number(
+      (
+        await db.execute<{ count: number }>(sql`SELECT count(*)::int AS count FROM store_listings`)
+      )[0]?.count ?? 0
+    ),
+    multiStore: await countMultiStore(),
+    celulares: await countMultiByCategory("celulares"),
+    televisores: await countMultiByCategory("televisores"),
+    computadoras: await countMultiByCategory("computadoras"),
+  };
+  console.log(
+    `   ANTES: ${before.products} productos · ${before.listings} listings · ${before.multiStore} comparables (2+ tiendas) · celulares ${before.celulares} · TV ${before.televisores} · laptops ${before.computadoras}`
+  );
+
+  // ---- 1. Recalcular identidad de cada listing ----------------------------
   const rows = await db
     .select({
-      productId: products.id,
-      matchKey: products.matchKey,
-      canonicalName: products.canonicalName,
-      brand: products.brand,
-      modelNumber: products.modelNumber,
-      category: products.category,
-      imageUrl: products.imageUrl,
-      specs: products.specs,
-      listingId: storeListings.id,
+      id: storeListings.id,
       storeId: storeListings.storeId,
       storeSlug: stores.slug,
       externalId: storeListings.externalId,
       title: storeListings.titleAtStore,
       priceCents: storeListings.priceCents,
-      originalPriceCents: storeListings.originalPriceCents,
       inStock: storeListings.inStock,
-      url: storeListings.url,
-      listingImage: storeListings.imageUrl,
-      lastCheckedAt: storeListings.lastCheckedAt,
+      imageUrl: storeListings.imageUrl,
+      brand: products.brand,
+      modelNumber: products.modelNumber,
     })
-    .from(products)
-    .innerJoin(storeListings, eq(storeListings.productId, products.id))
-    .innerJoin(stores, eq(stores.id, storeListings.storeId));
+    .from(storeListings)
+    .innerJoin(stores, eq(stores.id, storeListings.storeId))
+    .innerJoin(products, eq(products.id, storeListings.productId));
 
-  const byProduct = new Map<string, { product: ProductRow; listings: ListingRow[] }>();
+  const groups = new Map<string, ListingRow[]>();
   for (const row of rows) {
-    const current = byProduct.get(row.productId) ?? {
-      product: {
-        id: row.productId,
-        matchKey: row.matchKey,
-        canonicalName: row.canonicalName,
-        brand: row.brand,
-        modelNumber: row.modelNumber,
-        category: row.category,
-        imageUrl: row.imageUrl,
-        specs: row.specs ?? null,
-      },
-      listings: [],
-    };
-    current.listings.push({
-      id: row.listingId,
-      storeId: row.storeId,
-      storeSlug: row.storeSlug,
-      externalId: row.externalId,
+    // Keep cleanup consistent with ingest for API-provided models, but only
+    // when the title really contains that model (guards against stale merges).
+    const titleKey = row.title.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const modelKey = (row.modelNumber ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const modelHint = modelKey.length >= 4 && titleKey.includes(modelKey) ? row.modelNumber : null;
+
+    const identity = deriveIdentity({
       title: row.title,
-      priceCents: row.priceCents,
-      originalPriceCents: row.originalPriceCents,
-      inStock: row.inStock,
-      url: row.url,
-      imageUrl: row.listingImage,
-      lastCheckedAt: row.lastCheckedAt,
+      storeSlug: row.storeSlug,
+      vendor: row.brand,
+      modelNumber: modelHint,
     });
-    byProduct.set(row.productId, current);
+    const list = groups.get(identity.matchKey) ?? [];
+    list.push(row);
+    groups.set(identity.matchKey, list);
   }
 
-  const reasons = new Map<string, number>();
-  const toSplit: Array<{ product: ProductRow; listings: ListingRow[]; reason: string }> = [];
+  // ---- 2. Clusterizar por precio (guardrail 2.2x) y una oferta por tienda --
+  const clusters: Cluster[] = [];
+  for (const [baseKey, listings] of groups) {
+    const sorted = [...listings].sort((a, b) => {
+      if (a.inStock !== b.inStock) return a.inStock ? -1 : 1;
+      if (a.priceCents !== b.priceCents) return a.priceCents - b.priceCents;
+      return a.storeSlug.localeCompare(b.storeSlug) || a.externalId.localeCompare(b.externalId);
+    });
 
-  for (const entry of byProduct.values()) {
-    const reason = suspicionReason(entry.product, entry.listings);
-    if (!reason) continue;
-    reasons.set(reason.replace(/-\d+\.\d+$/, ""), (reasons.get(reason.replace(/-\d+\.\d+$/, "")) ?? 0) + 1);
-    toSplit.push({ ...entry, reason });
-  }
-
-  console.log(`   productos revisados: ${byProduct.size}`);
-  console.log(`   productos a separar: ${toSplit.length}`);
-  console.log(`   motivos: ${JSON.stringify([...reasons.entries()])}`);
-
-  let movedListings = 0;
-  let createdProducts = 0;
-  let processed = 0;
-
-  for (const entry of toSplit) {
-    const { product, listings } = entry;
-
-    for (const listing of listings) {
-      const key = scopedKey(product.matchKey, listing.storeSlug, listing.externalId);
-      const baseSlug =
-        slugify(product.canonicalName).slice(0, 108) || slugify(product.modelNumber ?? "producto");
-      let slug = `${baseSlug}-${shortHash(key)}`;
-      let attempt = 0;
-      while (attempt < 5) {
-        const [clash] = await db
-          .select({ id: products.id, matchKey: products.matchKey })
-          .from(products)
-          .where(eq(products.slug, slug))
-          .limit(1);
-        if (!clash || clash.matchKey === key) break;
-        attempt += 1;
-        slug = `${baseSlug.slice(0, 100)}-${shortHash(`${key}:${attempt}`)}`;
-      }
-
-      const [scoped] = await db
-        .insert(products)
-        .values({
-          slug,
-          matchKey: key,
-          canonicalName: product.canonicalName,
-          brand: product.brand,
-          modelNumber: product.modelNumber,
-          category: product.category,
-          imageUrl: product.imageUrl,
-          specs: {
-            ...(product.specs ?? {}),
-            splitReason: entry.reason,
-            splitFrom: product.matchKey,
-          },
-        })
-        .onConflictDoUpdate({
-          target: products.matchKey,
-          set: { updatedAt: new Date() },
-        })
-        .returning({ id: products.id });
-
-      if (!scoped) continue;
-      if (scoped.id !== product.id) createdProducts += 1;
-
-      await db
-        .update(storeListings)
-        .set({ productId: scoped.id, updatedAt: new Date() })
-        .where(eq(storeListings.id, listing.id));
-      movedListings += 1;
-    }
-
-    // Only delete when every listing actually moved (never cascade real data).
-    const [remaining] = await db
-      .select({ id: storeListings.id })
-      .from(storeListings)
-      .where(eq(storeListings.productId, product.id))
-      .limit(1);
-    if (!remaining) {
-      await db.delete(products).where(eq(products.id, product.id));
-    }
-
-    processed += 1;
-    if (processed % 100 === 0) {
-      console.log(
-        `   … ${processed}/${toSplit.length} productos separados · ${movedListings} listings reubicados`
+    const local: Cluster[] = [];
+    for (const listing of sorted) {
+      let target = local.find(
+        (cluster) =>
+          !cluster.isolated &&
+          !cluster.stores.has(listing.storeSlug) &&
+          ratioFits(cluster, listing.priceCents)
       );
+      if (!target) {
+        const sameStoreExists = local.some((cluster) => cluster.stores.has(listing.storeSlug));
+        target = {
+          key: local.length === 0 ? baseKey : scopedKey(baseKey, listing),
+          listings: [],
+          stores: new Set<string>(),
+          minPrice: listing.priceCents,
+          maxPrice: listing.priceCents,
+          isolated: sameStoreExists,
+        };
+        local.push(target);
+      }
+      target.listings.push(listing);
+      target.stores.add(listing.storeSlug);
+      target.minPrice = Math.min(target.minPrice, listing.priceCents);
+      target.maxPrice = Math.max(target.maxPrice, listing.priceCents);
     }
+    clusters.push(...local);
   }
 
-  await db.execute(
-    sql`DELETE FROM products p WHERE NOT EXISTS (SELECT 1 FROM store_listings sl WHERE sl.product_id = p.id)`
+  console.log(`   grupos recalculados: ${clusters.length} productos destino`);
+
+  // ---- 3. Reutilizar productos existentes por match_key -------------------
+  const existing = await db
+    .select({ id: products.id, matchKey: products.matchKey, slug: products.slug })
+    .from(products);
+  const existingByKey = new Map<string, ProductRow>(
+    existing.map((row) => [row.matchKey, row])
+  );
+  const takenSlugs = new Map<string, string>(
+    existing.map((row) => [row.slug, row.matchKey])
   );
 
-  console.log(`   listings reubicados: ${movedListings}`);
-  console.log(`   productos scoped creados: ${createdProducts}`);
-  console.log("   huérfanos eliminados: verificados");
+  const idByKey = new Map<string, string>();
+  const toCreate: Array<typeof products.$inferInsert> = [];
 
-  const repaired = await repairScopedMetadata();
-  console.log(`   metadata scoped reparada: ${repaired}`);
-  console.log("✅ Limpieza terminada");
+  for (const cluster of clusters) {
+    const reused = existingByKey.get(cluster.key);
+    if (reused) {
+      idByKey.set(cluster.key, reused.id);
+      continue;
+    }
+
+    const representative = cluster.listings[0]!;
+    const identity = deriveIdentity({
+      title: representative.title,
+      storeSlug: representative.storeSlug,
+    });
+    toCreate.push({
+      slug: slugFor(identity.canonicalName, cluster.key, takenSlugs),
+      matchKey: cluster.key,
+      canonicalName: identity.canonicalName,
+      brand: identity.brand,
+      modelNumber: identity.modelNumber,
+      category: identity.category,
+      imageUrl: representative.imageUrl,
+      specs: {
+        ...identity.specs,
+        regroupedAt: new Date().toISOString(),
+      },
+      embeddingText: [
+        identity.brand,
+        identity.canonicalName,
+        identity.category,
+        representative.title,
+      ]
+        .filter(Boolean)
+        .join(" | ")
+        .slice(0, 1200),
+    });
+  }
+
+  for (const batch of chunk(toCreate, PRODUCT_BATCH)) {
+    const inserted = await db
+      .insert(products)
+      .values(batch)
+      .onConflictDoUpdate({
+        target: products.matchKey,
+        set: { updatedAt: new Date() },
+      })
+      .returning({ id: products.id, matchKey: products.matchKey });
+    for (const row of inserted) idByKey.set(row.matchKey, row.id);
+  }
+
+  // ---- 4. Reasignar listings en bloque ------------------------------------
+  const pairs: Array<[string, string]> = [];
+  for (const cluster of clusters) {
+    const productId = idByKey.get(cluster.key);
+    if (!productId) continue;
+    for (const listing of cluster.listings) pairs.push([listing.id, productId]);
+  }
+
+  for (const batch of chunk(pairs, LISTING_BATCH)) {
+    const values = batch.map(([listingId, productId]) => sql`(${listingId}::uuid, ${productId}::uuid)`);
+    await db.execute(sql`
+      UPDATE store_listings AS sl
+      SET product_id = v.product_id, updated_at = now()
+      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(listing_id, product_id)
+      WHERE sl.id = v.listing_id
+    `);
+  }
+  console.log(`   listings reasignados: ${pairs.length}`);
+
+  // ---- 5. Borrar huérfanos sin referencias (favoritos/alertas protegidos) --
+  const deleted = await db.execute(sql`
+    DELETE FROM products p
+    WHERE NOT EXISTS (SELECT 1 FROM store_listings sl WHERE sl.product_id = p.id)
+      AND NOT EXISTS (SELECT 1 FROM user_favorites f WHERE f.product_id = p.id)
+      AND NOT EXISTS (SELECT 1 FROM price_alerts a WHERE a.product_id = p.id)
+  `);
+  console.log(`   productos huérfanos eliminados: ${(deleted as unknown as { count?: number }).count ?? "ok"}`);
+
+  // ---- 6. Reporte ANTES vs DESPUÉS ---------------------------------------
+  const after = {
+    products: Number(
+      (
+        await db.execute<{ count: number }>(sql`SELECT count(*)::int AS count FROM products`)
+      )[0]?.count ?? 0
+    ),
+    listings: Number(
+      (
+        await db.execute<{ count: number }>(sql`SELECT count(*)::int AS count FROM store_listings`)
+      )[0]?.count ?? 0
+    ),
+    multiStore: await countMultiStore(),
+    celulares: await countMultiByCategory("celulares"),
+    televisores: await countMultiByCategory("televisores"),
+    computadoras: await countMultiByCategory("computadoras"),
+  };
+
+  console.log(
+    `   DESPUÉS: ${after.products} productos · ${after.listings} listings · ${after.multiStore} comparables (2+ tiendas) · celulares ${after.celulares} · TV ${after.televisores} · laptops ${after.computadoras}`
+  );
+  console.log(
+    `   Δ comparables: ${before.multiStore} → ${after.multiStore} (${
+      before.multiStore > 0
+        ? `${(((after.multiStore - before.multiStore) / before.multiStore) * 100).toFixed(1)}%`
+        : "n/a"
+    })`
+  );
+
+  const top = await db.execute<{
+    match_key: string;
+    tiendas: number;
+    ofertas: string;
+    ratio: number;
+  }>(sql`
+    SELECT p.match_key,
+           count(DISTINCT sl.store_id)::int AS tiendas,
+           string_agg(s.slug || ' $' || to_char(sl.price_cents / 100.0, 'FM999999.00'), ' · ' ORDER BY sl.price_cents) AS ofertas,
+           round(max(sl.price_cents)::numeric / NULLIF(min(sl.price_cents), 0), 2) AS ratio
+    FROM products p
+    JOIN store_listings sl ON sl.product_id = p.id
+    JOIN stores s ON s.id = sl.store_id
+    GROUP BY p.id
+    HAVING count(DISTINCT sl.store_id) >= 2
+    ORDER BY tiendas DESC, ratio DESC
+    LIMIT 15
+  `);
+  console.log("\n   TOP 15 comparables multi-tienda:");
+  console.table(Array.from(top as unknown as Array<Record<string, unknown>>));
+
+  const bad = await db.execute<{ count: number }>(sql`
+    SELECT count(*)::int AS count FROM (
+      SELECT p.id FROM products p JOIN store_listings sl ON sl.product_id = p.id
+      GROUP BY p.id
+      HAVING max(sl.price_cents)::numeric / NULLIF(min(sl.price_cents), 0) > 2.2
+    ) x
+  `);
+  console.log(
+    `   productos con ratio > 2.2: ${(Array.from(bad as unknown as Array<{ count: number }>)[0]?.count ?? 0)}`
+  );
 }
 
 try {
   await main();
 } catch (error) {
-  console.error(`❌ Limpieza falló: ${(error as Error).message}`);
+  console.error(`❌ Re-agrupamiento falló: ${(error as Error).message}`);
   process.exitCode = 1;
 } finally {
   const { sqlClient } = await import("@regateo/db");

@@ -66,6 +66,15 @@ respetan con pacing (`FIRECRAWL_MIN_INTERVAL_MS`, default 6000 ms) y un reintent
 `src/matching.ts` decide si dos listings de tiendas distintas son **el mismo producto**.
 La regla de oro: *ante la duda, no fusionar* (se muestran como “alternativas similares”).
 
+### Regla 0 — Familia de marca cuando la tienda omite el fabricante
+
+`inferBrandFromFamily()` reconoce las familias que Panamá escribe sin marca
+(`iPhone 17`, `Galaxy S25 FE`, `BRAVIA 8`, `IdeaPad`, `Vivobook`, `Inspiron`, …) y les
+asigna Apple/Samsung/Sony/Lenovo/Asus/Dell/Acer/LG/Nintendo/Microsoft/Canon/Epson/Ninja.
+Así `iPhone 17 512GB` de Panafoto deja de caer en `generic-panafoto::` y empata con
+Multimax. El **vendor** de Shopify y la marca explícita del título siempre tienen
+prioridad sobre la familia.
+
 ### Regla 1 — Solo un modelo exacto puede fusionar
 
 - Se requiere el **código de modelo normalizado** (`QN55Q60D`, `15-FC0287LA`,
@@ -93,7 +102,22 @@ Todo diferenciador presente en el título entra al `match_key` (`marca::modelo-<
 | BTU | `-12000btu` | aires acondicionados |
 
 Se guardan también en `products.specs` (`panelTechnology`, `screenSizeInches`, `storage`,
-`ram`, `capacityKg`, `capacityCuFt`, `btu`) para auditoría.
+`ram`, `capacityKg`, `capacityCuFt`, `btu`, `color`, `gtin`) para auditoría.
+
+### Claves canónicas de celulares (familias top)
+
+- **iPhone**: `apple::iphone-<gen><tier>-<storage>` con tier `e | air | plus | pro |
+  pro-max` y almacenamiento obligatorio. `iPhone 17 512GB` empata entre tiendas;
+  `iPhone 17 Pro`, `iPhone 17 256GB` e `iPhone 16e` nunca se mezclan.
+- **Samsung Galaxy S/A/Z**: `samsung::galaxy-<serie><gen>-<tier>-<storage>` con tier
+  `fe | plus | ultra | flip | fold`. También reconoce `Samsung A17 128GB` sin la palabra
+  Galaxy (con señales de teléfono). `Galaxy S25 FE 512GB` ≠ `Galaxy S25 256GB`.
+- **Color y ruido comercial** (`negro`, `teal`, `titanio`, `midnight`, `SF`, `E-SIM`,
+  `5G`, `liberado`, `dual sim`, …) se excluyen de la clave y el color queda en
+  `specs.color`: todos los colores del mismo modelo/almacenamiento comparten producto.
+- **GTIN/EAN/UPC**: si Shopify entrega `variant.barcode` (8–14 dígitos) se usa la clave
+  `gtin::<digitos>`, que identifica el SKU exacto entre tiendas (siempre con el
+  guardrail de precio 2.2x).
 
 ### Regla 3 — Guardrail de precio 2.2x (`src/ingest.ts`)
 
@@ -131,6 +155,8 @@ el scraping solo se dispara desde terminal, VPS, Render Cron o GitHub Actions.
 | `bun run scrape:full` | `scripts/scrape-radar.ts --full` | Igual que el anterior pero **sin techo práctico**: hasta **20.000** productos por tienda (catálogo completo real). |
 | `bun run scrape:schedule` | `packages/scraper/src/scheduler.ts` | Daemon de automatización cada `SCRAPE_INTERVAL_DAYS` días (1..7, default **3**) a las **03:00 hora de Panamá** (08:00 UTC). Imprime la próxima corrida y soporta `--once` y `--run-now`. |
 | `bun run scrape` | `packages/scraper/src/cli.ts` | CLI del paquete para corridas puntuales: `--stores=`, `--max=`, `--full`, `--no-firecrawl`, `--no-enrich`, `--json`. |
+| `alerts:check` | `packages/scraper/src/alerts.ts` | Evalúa y despacha alertas sin re-scrapear (`bun --filter @regateo/scraper alerts:check`). |
+| `test` | `src/matching.test.ts` | Suite del matcher con `bun test` (familias, iPhone/Galaxy, GTIN, negativos estrictos, colores). |
 
 Flags de `scrape:radar` / `scrape:full`:
 
@@ -165,11 +191,17 @@ bun --filter @regateo/scraper typecheck
 Mantenimiento puntual de datos (desde `packages/scraper`):
 
 ```bash
-bun src/cleanup.ts                          # separa fusiones falsas y repara metadata
+bun src/cleanup.ts                          # re-agrupa listings con el matcher actual + reporte antes/después
+bun test                                    # suite del matcher (87 tests)
+bun src/alerts.ts                           # evalúa y despacha alertas de precio
 ```
 
-El workflow `.github/workflows/scheduled-scrape.yml` ejecuta el barrido de forma
-programada (`cron 0 8 */3 * *`) con `max_per_store: 5000` por defecto.
+Workflows:
+
+- `.github/workflows/scheduled-scrape.yml`: barrido **diario** (`cron 0 8 * * *`,
+  03:00 Panamá) con `max_per_store: 5000` y despacho de alertas al final.
+- `.github/workflows/ci.yml`: en `push`/`pull_request` a `main` ejecuta
+  `bun install --frozen-lockfile`, `bun run typecheck`, `bun test` y `bun run build`.
 
 ## Variables de entorno
 
@@ -192,7 +224,31 @@ programada (`cron 0 8 */3 * *`) con `max_per_store: 5000` por defecto.
 `store_id + external_id`), registra el snapshot real de hoy en `price_history` y
 actualiza `stores.last_scraped_at`. **No se inventan históricos ni productos**: cada
 punto de `price_history` corresponde a una observación real; se inserta cuando el precio
-cambia o cuando pasaron ≥12 h desde el último snapshot idéntico.
+**o el stock** cambia, o cuando pasaron ≥12 h desde el último snapshot idéntico.
+
+Reglas anti corrupción:
+
+- **Metadata estable**: `canonical_name` no se sobreescribe con un nombre peor, `brand`,
+  `model_number` e `image_url` usan `COALESCE`, y `products.updated_at` solo se toca
+  cuando un precio o stock realmente cambió.
+- **Barrido de agotados**: al final de una corrida completa (`items >= 50` y al menos 60%
+  de los listings previos) se marca `in_stock = false` en los listings que la tienda ya
+  no devuelve, con su snapshot de precio. Así no quedan “zombies” como Mejor Precio.
+
+## Alertas de precio reales (`src/alerts.ts`)
+
+Al terminar `runScrapePipeline()` se ejecuta `evaluateAndDispatchPriceAlerts()`:
+
+1. Toma `price_alerts` con `active = true AND verified = true` y sin disparo en 24 h.
+2. Cruza con la **mejor oferta en stock** de `store_listings` para ese producto.
+3. Si `mejor precio <= target_price_cents`, envía correo HTML con Resend
+   (`RESEND_API_KEY`, from `ALERTS_FROM_EMAIL`) con asunto
+   `🔥 Bajó de precio: <producto> a $<precio> en <tienda>` y enlace
+   `${API_URL}/out/<listingId>?src=alert`.
+4. Sin `RESEND_API_KEY` (dev) registra `[ALERTA DISPARADA] ...` estructurado.
+5. Actualiza `price_alerts.last_triggered_at`.
+
+También puede ejecutarse solo con `bun --filter @regateo/scraper alerts:check`.
 
 ## Descubrimiento por tienda
 

@@ -2,6 +2,15 @@
 
 Todos los cambios relevantes del proyecto se documentan aquí siguiendo [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.3.0] - 2026-11-21
+
+### Corregido y Agregado (Auditoría Crítica Pre-Black Friday)
+- **Verdad del precio y stock:** `bestPriceCents` y `highestPriceCents` calculados solo sobre listings `in_stock = true`; separación estricta entre ahorro verificable entre tiendas (`savingsPercent <= 99%`) y descuento anunciado por tienda (`storeDiscountPercent <= 65%`); orden por defecto `most-stores` (y `relevance` al buscar) eliminando descuentos imposibles de portada; texto honesto en el Hero (`productos monitoreados` + `comparados en 2+ tiendas`); sellos de frescura y estado `Agotado`.
+- **Alertas reales y privadas:** motor post-barrido (`packages/scraper/src/alerts.ts`) con envío vía Resend + escritura de `last_triggered_at`; cierre del endpoint público `GET /api/alerts?email=` (`401` sin sesión); doble opt-in en `POST /api/alerts` + `GET /api/alerts/confirm`.
+- **Seguridad endurecida:** `Ratelimit` de Upstash por bucket con límite/ventana propios; IP de proxy confiable (`cf-connecting-ip`/`x-real-ip`); fail-fast de `BETTER_AUTH_SECRET` en producción; bloqueo de rol `system` y tope diario en Regateo AI; cero voseo argentino en toda la plataforma.
+- **Cobertura, tests y CI:** inferencia de marca por familia (*iPhone → Apple*, *Galaxy → Samsung*, *Bravia → Sony*, etc.), eliminación de color/ruido comercial de claves, soporte GTIN/barcode, marcado automático de listings no vistos como agotados, **87 tests automatizados (`bun test`)**, workflow **`.github/workflows/ci.yml`** y barrido **diario** (`0 8 * * *`).
+- **SEO, medición y UX:** rutas `/out/:listingId` (`302` + tabla `outbound_clicks`), `POST /api/reports` (*"Reportar precio incorrecto"*), `GET /sitemap.xml`, `GET /robots.txt`, páginas SEO `/p/:slug` con Open Graph + JSON-LD `AggregateOffer`, búsqueda con `unaccent` + `pg_trgm` `similarity()`, facetas independientes y filtros completos en URL con `pushState`/`popstate` para botón Atrás móvil.
+
 ## [0.2.0] - 2026-11-21
 
 ### Agregado

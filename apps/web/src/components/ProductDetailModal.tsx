@@ -1,11 +1,12 @@
-import type { SimilarProductDTO } from "@regateo/shared";
-import { useQuery } from "@tanstack/react-query";
+import type { ReportWrongPriceInput, SimilarProductDTO } from "@regateo/shared";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
   ArrowUpRight,
   Check,
   CheckCircle2,
   Copy,
+  Flag,
   GitCompareArrows,
   Heart,
   ListPlus,
@@ -16,9 +17,14 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useUserSpace } from "@/hooks/useUserSpace";
-import { fetchProductBySlug, fetchSimilarProducts } from "@/lib/api";
+import {
+  buildOutboundUrl,
+  fetchProductBySlug,
+  fetchSimilarProducts,
+  reportWrongPrice,
+} from "@/lib/api";
 import {
   cn,
   formatRelativeEs,
@@ -26,7 +32,6 @@ import {
   getCategoryLabel,
   getCategoryShortLabel,
   getDomainLabel,
-  sanitizeExternalUrl,
 } from "@/lib/utils";
 import { useFilterStore } from "@/store/useFilterStore";
 import { CategoryIcon } from "./CategoryIcon";
@@ -39,6 +44,16 @@ import { Dialog } from "./ui/dialog";
 import { Skeleton } from "./ui/skeleton";
 
 type SimilarFilter = "all" | "cheaper" | "other-stores";
+
+const REPORT_REASONS: Array<{
+  value: ReportWrongPriceInput["reason"];
+  label: string;
+}> = [
+  { value: "wrong-price", label: "Precio distinto en la tienda" },
+  { value: "out-of-stock", label: "Está agotado" },
+  { value: "wrong-match", label: "No es el mismo modelo" },
+  { value: "broken-link", label: "Enlace roto" },
+];
 
 function SimilarProductThumb({
   imageUrl,
@@ -101,6 +116,8 @@ export function ProductDetailModal() {
   const [quickListName, setQuickListName] = useState("");
   const [listBusyId, setListBusyId] = useState<string | null>(null);
   const [listFeedback, setListFeedback] = useState<string | null>(null);
+  const [reportListingId, setReportListingId] = useState<string | null>(null);
+  const [reportedListingIds, setReportedListingIds] = useState<string[]>([]);
   const listMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -108,6 +125,8 @@ export function ProductDetailModal() {
     setSimilarFilter("all");
     setListMenuOpen(false);
     setListFeedback(null);
+    setReportListingId(null);
+    setReportedListingIds([]);
   }, [selectedSlug]);
 
   useEffect(() => {
@@ -134,6 +153,25 @@ export function ProductDetailModal() {
   const shouldFetchSimilarLazy = Boolean(
     selectedSlug && product && product.similarProducts === undefined
   );
+
+  const reportMutation = useMutation({
+    mutationFn: reportWrongPrice,
+    onSuccess: (_result, variables) => {
+      setReportedListingIds((prev) =>
+        prev.includes(variables.listingId)
+          ? prev
+          : [...prev, variables.listingId]
+      );
+    },
+  });
+
+  const handleReport = (
+    listingId: string,
+    reason: ReportWrongPriceInput["reason"]
+  ) => {
+    if (!product) return;
+    reportMutation.mutate({ productId: product.id, listingId, reason });
+  };
 
   const similarQuery = useQuery({
     queryKey: ["product-similar", selectedSlug],
@@ -254,6 +292,14 @@ export function ProductDetailModal() {
     ? [...product.listings].sort((a, b) => a.priceCents - b.priceCents)
     : [];
 
+  const bestStoreOutUrl = product?.bestStore
+    ? buildOutboundUrl(
+        product.bestStore.listingId,
+        product.bestStore.url,
+        "detail"
+      )
+    : null;
+
   return (
     <Dialog
       open={Boolean(selectedSlug)}
@@ -332,16 +378,31 @@ export function ProductDetailModal() {
                   <div className="relative z-10 flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <span className="text-xs font-semibold text-[#047857]">
-                        Mejor precio detectado en Panamá
+                        {product.inStockCount === 0
+                          ? "Último precio detectado · agotado al último barrido"
+                          : "Mejor precio detectado en Panamá"}
                       </span>
                       <div className="mt-0.5 flex items-baseline gap-2.5">
                         <span className="font-price text-3xl font-bold text-[#047857]">
                           {formatUsd(product.bestPriceCents)}
                         </span>
-                        {product.savingsCents >= 100 ? (
+                        {product.storeCount >= 2 &&
+                        product.savingsCents > 0 &&
+                        product.savingsPercent <= 99 ? (
                           <Badge variant="savings" className="font-mono tabular-nums">
                             Ahorras {formatUsd(product.savingsCents)} (-
-                            {product.savingsPercent}%)
+                            {product.savingsPercent}%) entre tiendas
+                          </Badge>
+                        ) : null}
+                        {product.storeCount <= 1 &&
+                        (product.storeDiscountCents ?? 0) > 0 &&
+                        (product.storeDiscountPercent ?? 0) > 0 &&
+                        (product.storeDiscountPercent ?? 0) <= 65 ? (
+                          <Badge
+                            variant="savingsSoft"
+                            className="font-mono tabular-nums"
+                          >
+                            Dto. tienda -{product.storeDiscountPercent}%
                           </Badge>
                         ) : null}
                       </div>
@@ -359,9 +420,9 @@ export function ProductDetailModal() {
                       </p>
                     </div>
 
-                    {product.bestStore && sanitizeExternalUrl(product.bestStore.url) ? (
+                    {product.bestStore && bestStoreOutUrl ? (
                       <a
-                        href={sanitizeExternalUrl(product.bestStore.url)!}
+                        href={bestStoreOutUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-[#047857] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#065F46]"
@@ -582,15 +643,18 @@ export function ProductDetailModal() {
                   </thead>
                   <tbody className="divide-y divide-[#EFECE5] bg-white">
                     {sortedListings.map((listing) => {
-                      const safeUrl = sanitizeExternalUrl(listing.url);
+                      const safeUrl = buildOutboundUrl(listing.id, listing.url, "detail");
                       return (
-                        <tr
-                          key={listing.id}
-                          className={cn(
-                            "transition-colors hover:bg-[#FAFAF7]",
-                            listing.isCheapest ? "bg-[#ECFDF5]/40" : ""
-                          )}
-                        >
+                        <Fragment key={listing.id}>
+                          <tr
+                            className={cn(
+                              "transition-colors hover:bg-[#FAFAF7]",
+                              listing.isCheapest && listing.inStock
+                                ? "bg-[#ECFDF5]/40"
+                                : "",
+                              listing.inStock ? "" : "opacity-60"
+                            )}
+                          >
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-2.5">
                               <span
@@ -650,7 +714,8 @@ export function ProductDetailModal() {
                           </td>
 
                           <td className="px-4 py-3 text-xs text-[#525866]">
-                            {formatRelativeEs(listing.lastCheckedAt)}
+                            Verificado {formatRelativeEs(listing.lastCheckedAt)} en{" "}
+                            {listing.storeName}
                           </td>
 
                           <td className="px-4 py-3 text-right">
@@ -672,8 +737,57 @@ export function ProductDetailModal() {
                             ) : (
                               <span className="text-xs text-[#666D7C]">No disponible</span>
                             )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setReportListingId((prev) =>
+                                  prev === listing.id ? null : listing.id
+                                )
+                              }
+                              className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-[#666D7C] transition-colors hover:text-[#B83416] cursor-pointer"
+                            >
+                              <Flag className="h-3 w-3" />
+                              <span>Reportar</span>
+                            </button>
                           </td>
                         </tr>
+                          {reportListingId === listing.id ? (
+                            <tr>
+                              <td colSpan={6} className="bg-[#FAFAF7] px-4 py-2.5">
+                                {reportedListingIds.includes(listing.id) ? (
+                                  <p className="text-[11px] font-semibold text-[#047857]">
+                                    Gracias, lo revisaremos en el próximo barrido.
+                                  </p>
+                                ) : (
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="text-[11px] font-semibold text-[#525866]">
+                                      ¿Precio o stock incorrecto en {listing.storeName}?
+                                      Repórtalo:
+                                    </span>
+                                    {REPORT_REASONS.map((reason) => (
+                                      <button
+                                        key={reason.value}
+                                        type="button"
+                                        disabled={reportMutation.isPending}
+                                        onClick={() =>
+                                          handleReport(listing.id, reason.value)
+                                        }
+                                        className="rounded-full border border-[#E7E5DF] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#525866] transition-colors hover:border-[#E64825]/50 hover:text-[#B83416] cursor-pointer disabled:opacity-60"
+                                      >
+                                        {reason.label}
+                                      </button>
+                                    ))}
+                                    {reportMutation.isError ? (
+                                      <span className="text-[11px] font-medium text-[#DC2626]">
+                                        No pudimos enviar el reporte. Intenta de nuevo.
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -785,7 +899,11 @@ export function ProductDetailModal() {
                 ) : (
                   <div className="grid gap-3 md:grid-cols-2">
                     {filteredSimilarProducts.map((item) => {
-                      const safeUrl = sanitizeExternalUrl(item.bestStore.url);
+                      const safeUrl = buildOutboundUrl(
+                        undefined,
+                        item.bestStore.url,
+                        "similar"
+                      );
                       const isCheaper = item.priceDiffCents < 0;
                       const isSamePrice = item.priceDiffCents === 0;
 

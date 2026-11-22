@@ -13,6 +13,20 @@ import {
   verification,
 } from "@regateo/db";
 
+const DEV_SECRET_PLACEHOLDER =
+  "dev-regateoapp-super-secret-key-change-in-production-32chars";
+
+/** Fail-fast (auditoría #7): en producción jamás arrancamos con placeholder. */
+function resolveAuthSecret(): string {
+  const secret = process.env.BETTER_AUTH_SECRET;
+  if (process.env.NODE_ENV === "production" && (!secret || secret === DEV_SECRET_PLACEHOLDER)) {
+    throw new Error(
+      "[RegateoApp] FATAL: BETTER_AUTH_SECRET falta o sigue siendo el placeholder de desarrollo. Configura un secreto real antes de desplegar."
+    );
+  }
+  return secret ?? DEV_SECRET_PLACEHOLDER;
+}
+
 const webUrl = process.env.WEB_URL ?? "http://localhost:5173";
 const cookieDomain = process.env.COOKIE_DOMAIN?.trim() || undefined;
 const baseURL =
@@ -22,9 +36,7 @@ const baseURL =
 
 export const auth = betterAuth({
   baseURL,
-  secret:
-    process.env.BETTER_AUTH_SECRET ??
-    "dev-regateoapp-super-secret-key-change-in-production-32chars",
+  secret: resolveAuthSecret(),
   database: drizzleAdapter(db, {
     provider: "pg",
     schema: { user, session, account, verification },

@@ -20,6 +20,8 @@ export interface ShopifyVariant {
   compare_at_price?: string | number | null;
   available?: boolean | null;
   sku?: string | null;
+  /** GTIN/EAN/UPC (Shopify exposes it as `barcode`). */
+  barcode?: string | null;
   option1?: string | null;
   option2?: string | null;
 }
@@ -106,6 +108,7 @@ export function mapShopifyProduct(
     title: product.title.trim(),
     brand: product.vendor?.trim() ?? null,
     sku: picked.variant.sku ?? null,
+    gtin: picked.variant.barcode ?? null,
     productType: product.product_type ?? null,
     priceCents: picked.priceCents,
     originalPriceCents: picked.originalPriceCents,
@@ -122,6 +125,7 @@ export function mapShopifyProduct(
       variantId: picked.variant.id,
       variantTitle: picked.variant.title ?? null,
       sku: picked.variant.sku ?? null,
+      gtin: picked.variant.barcode ?? null,
       compareAtPrice: picked.variant.compare_at_price ?? null,
       description: stripHtml(product.body_html).slice(0, 400),
     },
@@ -159,10 +163,13 @@ interface ShopifyPage {
 }
 
 /** One products.json request with polite exponential backoff on 429 / throttling. */
-async function requestShopifyPage(url: string): Promise<ShopifyPage> {
+async function requestShopifyPage(url: string, signal?: AbortSignal): Promise<ShopifyPage> {
   for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt += 1) {
+    if (signal?.aborted) return { products: [], status: 0, rateLimited: true };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 45_000);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const response = await fetch(url, {
         headers: {
@@ -203,6 +210,7 @@ async function requestShopifyPage(url: string): Promise<ShopifyPage> {
       await sleep(800 * (attempt + 1));
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -212,13 +220,14 @@ async function requestShopifyPage(url: string): Promise<ShopifyPage> {
 async function fetchCollectionPage(
   baseUrl: string,
   collection: string | null,
-  page: number
+  page: number,
+  signal?: AbortSignal
 ): Promise<ShopifyPage> {
   const root = baseUrl.replace(/\/+$/, "");
   const path = collection
     ? `${root}/collections/${collection}/products.json`
     : `${root}/products.json`;
-  return requestShopifyPage(`${path}?limit=${SHOPIFY_PAGE_SIZE}&page=${page}`);
+  return requestShopifyPage(`${path}?limit=${SHOPIFY_PAGE_SIZE}&page=${page}`, signal);
 }
 
 /**
@@ -236,10 +245,12 @@ async function pageShopifyCatalog(
   let emptyStreak = 0;
 
   for (let page = 1; page <= maxPages; page += 1) {
+    if (context.signal?.aborted) break;
     const { products, status, rateLimited } = await fetchCollectionPage(
       store.baseUrl,
       collection,
-      page
+      page,
+      context.signal
     );
 
     if (rateLimited || status === 0) {
@@ -338,7 +349,13 @@ export function createShopifyAdapter(store: PanamaStoreConfig): StoreAdapter {
       const results = await mapWithConcurrency(targets, 3, async (collection) => {
         const collected: RawScrapedItem[] = [];
         for (let page = 1; page <= pages; page += 1) {
-          const { products } = await fetchCollectionPage(store.baseUrl, collection, page);
+          if (context.signal?.aborted) break;
+          const { products } = await fetchCollectionPage(
+            store.baseUrl,
+            collection,
+            page,
+            context.signal
+          );
           if (products.length === 0) break;
           for (const product of products) {
             const item = mapShopifyProduct(product, store);

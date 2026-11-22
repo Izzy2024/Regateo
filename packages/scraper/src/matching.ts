@@ -71,7 +71,7 @@ export interface ParsedIdentity {
   sharedMatchKey: string;
   canonicalName: string;
   specs: Record<string, unknown>;
-  strategy: "model" | "signature";
+  strategy: "gtin" | "family" | "model" | "signature";
 }
 
 export interface IdentityInput {
@@ -92,6 +92,8 @@ export interface IdentityInput {
    * value and disables the raw fallback.
    */
   trustSku?: boolean;
+  /** GTIN/EAN/UPC supplied by the store (Shopify `variant.barcode`). */
+  gtin?: string | null;
 }
 
 /** Parses `$ 1,299.97`, `B/. 124.99`, `1249.97` or a numeric value into cents. */
@@ -151,7 +153,7 @@ export function looksLikeModelToken(token: string): boolean {
   if (!/[A-Z]/.test(normalized) || !/\d/.test(normalized)) return false;
   // Reject number + unit tokens: 9.42PC, 0.7PC, 1.8L, 700W, 50MP, 4GB, 65IN…
   if (
-    /^\d+(?:[.,]\d+)?(PCS?|LTS?|L|ML|KGS?|LBS?|WATTS?|W|KW|VA?|VRMS|RMS|BTUS?|KHZ|MHZ|HZ|GB|TB|MB|MAH|WH|KWH|INCHES?|INCH|IN|PULG|PULGADAS|AMPS?|A|FT3|FT|CU|CM|MM|MP|LUMENS?|X)$/.test(
+    /^\d+(?:[.,]\d+)?(GHZ|MHZ|KHZ|HZ|G|PCS?|LTS?|L|ML|KGS?|LBS?|WATTS?|W|KW|VA?|VRMS|RMS|BTUS?|GB|TB|MB|MAH|WH|KWH|INCHES?|INCH|IN|PULG|PULGADAS|AMPS?|A|FT3|FT|CU|CM|MM|MP|LUMENS?|X)$/.test(
       normalized
     )
   ) {
@@ -168,6 +170,10 @@ export function looksLikeModelToken(token: string): boolean {
   if (/^\d{1,3}(?:MS|FPS|BIT)$/.test(normalized)) return false;
   // Voltage ranges (100V-240V, 110-220VAC) describe power, not a product model.
   if (/^\d{2,4}V(?:AC|DC)?(?:[-~/]\d{2,4}V(?:AC|DC)?)?$/.test(normalized)) return false;
+  // Frequency bands (2.4GHZ, 5GHZ) are specs, not models.
+  if (/^\d+(?:[.,]\d+)?(?:GHZ|MHZ|KHZ|G)$/.test(normalized)) return false;
+  // Wi-Fi speed classes (AX1800, AC1200, N300) are not unique models.
+  if (/^(?:AX|AC|AXE|BE|N)\d{3,4}$/.test(normalized)) return false;
   // Ingress protection ratings (IPX4, IP67) are specs, not models.
   if (/^IPX?\d{1,2}$/.test(normalized)) return false;
   // Generation markers (GEN11) and M.2 style storage slots are not models.
@@ -241,6 +247,80 @@ export function extractBtu(title: string): number | null {
 }
 
 /**
+ * Brand family inference: several Panamanian stores omit the manufacturer in the
+ * title ("iPhone 17 512GB", "Galaxy S25 FE"), which used to produce keys like
+ * `generic-panafoto::...` and lose every cross-store comparison.
+ */
+const BRAND_FAMILIES: Array<[RegExp, string]> = [
+  [/\b(iphone|ipad|macbook|airpods|apple\s?watch|imac|mac\s?mini|mac\s?studio)\b/i, "Apple"],
+  [/\b(galaxy|qled|crystal\s?uhd|neo\s?qled|odyssey|bespoke)\b/i, "Samsung"],
+  [/\b(redmi|poco|mi\s?tv|xiaomi)\b/i, "Xiaomi"],
+  [/\b(bravia|playstation|ps5|dualsense|cybershot)\b/i, "Sony"],
+  [/\b(ideapad|thinkpad|legion|yoga|loq)\b/i, "Lenovo"],
+  [/\b(pavilion|victus|probook|envy|elitebook|omen)\b/i, "HP"],
+  [/\b(vivobook|zenbook|tuf\s?gaming|rog\b)/i, "Asus"],
+  [/\b(inspiron|latitude|xps|alienware)\b/i, "Dell"],
+  [/\b(nitro|predator|aspire|swift)\b/i, "Acer"],
+  [/\b(instaview|qned|nanocell|thinq|xboom)\b/i, "LG"],
+  [/\b(nintendo\s?switch|joy-?con)\b/i, "Nintendo"],
+  [/\bxbox\b/i, "Microsoft"],
+  [/\b(powershot|pixma|eos\b)/i, "Canon"],
+  [/\becotank\b/i, "Epson"],
+  [/\b(air\s?fryer\s+ninja|licuadora[^|]{0,40}ninja)\b/i, "Ninja"],
+];
+
+/** Infers the manufacturer from a model-family word when the brand is absent. */
+export function inferBrandFromFamily(title: string): string | null {
+  const haystack = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  for (const [pattern, brand] of BRAND_FAMILIES) {
+    if (pattern.test(haystack)) return brand;
+  }
+  return null;
+}
+
+/**
+ * Color names are a purchase variant, not a product identity: two colors of the
+ * same iPhone are the same comparable product and must share a key.
+ */
+const COLOR_TOKENS = [
+  "negro", "negra", "blanco", "blanca", "gris", "plata", "plateado", "plateada",
+  "azul", "rojo", "roja", "verde", "rosa", "dorado", "dorada", "transparente",
+  "titani", "titanio", "morado", "lavanda", "grafito", "midnight", "starlight",
+  "ultramarine", "desert", "natural", "black", "white", "blue", "pink", "green",
+  "silver", "gold", "gray", "grey", "teal", "purpura", "violeta", "naranja",
+  "amarillo", "celeste", "coral", "menta", "crema", "beige", "marron", "caqui",
+] as const;
+
+/** Commercial/telecom suffixes that never differentiate the device model. */
+const COMMERCIAL_NOISE = [
+  "sf", "esim", "e-sim", "5g", "4g", "lte", "liberado", "desbloqueado", "dual",
+  "sim", "global", "version", "nuevo", "sellado", "original",
+] as const;
+
+const COLOR_SET = new Set<string>(COLOR_TOKENS);
+const COMMERCIAL_SET = new Set<string>(COMMERCIAL_NOISE);
+
+/** First color mentioned in the title (stored in `specs.color`). */
+export function extractColor(title: string): string | null {
+  const tokens = title
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9-]+/);
+  for (const token of tokens) {
+    if (COLOR_SET.has(token)) return token;
+  }
+  return null;
+}
+
+/** Validates and normalizes a GTIN/EAN/UPC (8–14 numeric digits). */
+export function normalizeGtin(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const digits = String(value).replace(/[^0-9]/g, "");
+  return digits.length >= 8 && digits.length <= 14 ? digits : null;
+}
+
+/**
  * Brands commonly sold in Panama that are missing from the shared list.
  * Kept here (scraper-owned) so `@regateo/shared` stays untouched.
  */
@@ -271,9 +351,13 @@ export function extractPanamaBrand(title: string, vendor?: string | null): strin
     const escaped = brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (new RegExp(`\\b${escaped}\\b`, "i").test(haystack)) return brand;
   }
+  // Store vendor is a reliable manufacturer signal in Shopify; the family
+  // dictionary is the fallback for stores that omit the brand (Panafoto).
   if (vendor && vendor.trim().length >= 2 && vendor.trim().length <= 32) {
     return titleCase(vendor.trim());
   }
+  const family = inferBrandFromFamily(title);
+  if (family) return family;
   return null;
 }
 
@@ -427,10 +511,9 @@ export function extractMemoryProfile(title: string): MemoryProfile {
       if (storageGb === null) storageGb = sorted[sorted.length - 1] ?? null;
     } else if (leftovers.length === 1) {
       const only = leftovers[0] ?? 0;
-      if (storageGb === null && ramGb === null) {
-        if (only >= 64) storageGb = only;
-        else ramGb = only;
-      }
+      // With RAM already identified ("8GB RAM"), the remaining value is storage.
+      if (storageGb === null && (only >= 64 || ramGb !== null)) storageGb = only;
+      else if (ramGb === null && only < 64) ramGb = only;
     }
   }
 
@@ -474,6 +557,9 @@ const SIGNATURE_STOPWORDS = new Set([
   "color", "negro", "blanco", "gris", "plata", "plateado", "azul", "rojo",
   "verde", "rosa", "dorado", "transparente", "smart", "tv", "pulgadas",
   "pulgada", "pulg", "nuevo", "incluye", "garantia", "anos", "año",
+  // colors and commercial/telecom noise are not product identity
+  ...COLOR_TOKENS,
+  ...COMMERCIAL_NOISE,
 ]);
 
 /**
@@ -507,6 +593,63 @@ function strictSignature(
   return `${prefix}::${core}`.slice(0, 180);
 }
 
+function storageDiscriminator(title: string): string | null {
+  return extractMemoryProfile(title).storage;
+}
+
+/**
+ * Canonical iPhone key: `apple::iphone-<gen><tier>-<storage>`.
+ * Tier strictly separates "" | e | air | plus | pro | pro-max, and storage is
+ * mandatory, so `iPhone 17 512GB` matches across stores while `iPhone 17 Pro`
+ * and `iPhone 17 256GB` never collide.
+ */
+export function canonicalIphoneKey(title: string): string | null {
+  const normalized = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  const match = normalized.match(/\bIPHONE\s*(\d{1,2})\s*(PRO\s*MAX|PRO|PLUS|AIR|MINI|E)?\b/);
+  if (!match?.[1]) return null;
+  const storage = storageDiscriminator(title);
+  if (!storage) return null;
+  const generation = match[1];
+  const tier = (match[2] ?? "").toLowerCase().replace(/\s+/g, "-");
+  return `apple::iphone-${generation}${tier ? `-${tier}` : ""}-${storage}`;
+}
+
+/**
+ * Canonical Samsung Galaxy S/A/Z key: `samsung::galaxy-<series><gen>-<tier>-<storage>`.
+ * `Galaxy S25 FE 512GB` and `Galaxy S25 256GB` can never share a product.
+ */
+export function canonicalGalaxyKey(title: string): string | null {
+  const normalized = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  let series: string | null = null;
+  let generation: string | null = null;
+  let rawTier = "";
+
+  const galaxy = normalized.match(
+    /\bGALAXY\s+(?:Z\s+)?([SAZ])\s*(FE|PLUS|ULTRA|FLIP|FOLD|LITE)?\s*(\d{1,3})?\s*(FE|PLUS|ULTRA|FLIP|FOLD|LITE|\+)?/
+  );
+  if (galaxy?.[1]) {
+    series = galaxy[1];
+    generation = galaxy[3] ?? null;
+    rawTier = galaxy[2] ?? galaxy[4] ?? "";
+  } else {
+    // Some stores write "Samsung A17 128GB" without the Galaxy word.
+    const samsung = normalized.match(/\bSAMSUNG\s+([SAZ])(\d{1,3})\s*(FE|PLUS|ULTRA|LITE)?\b/);
+    const phoneCues = /(5G|4G|GB|RAM|CELULAR|SMARTPHONE|DUAL\s?SIM)/.test(normalized);
+    if (samsung?.[1] && phoneCues) {
+      series = samsung[1];
+      generation = samsung[2] ?? null;
+      rawTier = samsung[3] ?? "";
+    }
+  }
+
+  if (!series || !generation) return null;
+  const storage = storageDiscriminator(title);
+  if (!storage) return null;
+
+  const tier = rawTier === "+" ? "plus" : rawTier.toLowerCase().replace(/[^a-z]/g, "");
+  return `samsung::galaxy-${series.toLowerCase()}${generation}${tier ? `-${tier}` : ""}-${storage}`;
+}
+
 /**
  * Resolves brand/model/category and the strict multi-store match key for one item.
  *
@@ -529,6 +672,8 @@ export function deriveIdentity(input: IdentityInput): ParsedIdentity {
   const brandSlug = slugify(brand ?? input.vendor ?? "generic") || "generic";
 
   const disc = variantDiscriminators(input.title, category);
+  const gtin = normalizeGtin(input.gtin ?? null);
+  const color = extractColor(input.title);
 
   const sharedMatchKey = buildMatchKey({
     title: input.title,
@@ -547,14 +692,28 @@ export function deriveIdentity(input: IdentityInput): ParsedIdentity {
     capacityKg: disc.capacityKg,
     capacityCuFt: disc.capacityCuFt,
     btu: disc.btu,
+    color,
+    gtin,
     sharedMatchKey,
   };
 
   const suffix = discriminatorSuffix(disc);
   let matchKey: string;
   let strategy: ParsedIdentity["strategy"];
+  const iphoneKey = canonicalIphoneKey(input.title);
+  const galaxyKey = canonicalGalaxyKey(input.title);
 
-  if (modelNumber) {
+  if (gtin) {
+    // A valid GTIN identifies the exact SKU across every store.
+    matchKey = `gtin::${gtin}`;
+    strategy = "gtin";
+  } else if (iphoneKey) {
+    matchKey = iphoneKey;
+    strategy = "family";
+  } else if (galaxyKey) {
+    matchKey = galaxyKey;
+    strategy = "family";
+  } else if (modelNumber) {
     const modelSlug = slugify(modelNumber);
     matchKey = `${brandSlug}::${modelSlug}${suffix ? `-${suffix}` : ""}`.slice(0, 180);
     strategy = "model";

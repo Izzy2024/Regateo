@@ -9,6 +9,7 @@ import type {
   ProductDetailDTO,
   ProductSearchQuery,
   ProductSummaryDTO,
+  ReportWrongPriceInput,
   ShoppingListDTO,
   SimilarProductDTO,
   StoreStatusDTO,
@@ -17,6 +18,7 @@ import type {
   UserOverviewDTO,
 } from "@regateo/shared";
 
+import { sanitizeExternalUrl } from "./utils";
 export const API_BASE_URL = (
   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:3001"
 ).replace(/\/+$/, "");
@@ -25,6 +27,21 @@ export const API_BASE_URL = (
 export const rpcClient = hc<AppType>(API_BASE_URL, {
   init: { credentials: "include" },
 });
+
+/**
+ * Enlace saliente medible vía redirección del API (/out/:listingId?src=...).
+ * Si falta el listingId, cae al URL directo de la tienda sanitizado.
+ */
+export function buildOutboundUrl(
+  listingId: string | null | undefined,
+  fallbackUrl: string | null | undefined,
+  source: string
+): string | null {
+  if (listingId) {
+    return `${API_BASE_URL}/out/${encodeURIComponent(listingId)}?src=${encodeURIComponent(source)}`;
+  }
+  return sanitizeExternalUrl(fallbackUrl);
+}
 
 export interface ProductsResponse {
   items: ProductSummaryDTO[];
@@ -42,7 +59,16 @@ export interface ProductsResponse {
   meta: {
     cached: boolean;
     lastScrapedAt: string | null;
+    comparableCount?: number;
   };
+}
+
+export interface CreatePriceAlertResponse {
+  alert?: PriceAlertRecord;
+  /** Doble opt-in: la alerta queda pendiente hasta confirmar por correo. */
+  requiresConfirmation?: boolean;
+  /** Solo presente en desarrollo para confirmar en 1 clic. */
+  confirmUrl?: string;
 }
 
 export interface DealsResponse {
@@ -246,20 +272,21 @@ export function fetchStores(): Promise<StoresResponse> {
 export function createPriceAlert(
   input: CreatePriceAlertInput,
   captcha?: CaptchaHeaders
-): Promise<{ alert: PriceAlertRecord }> {
-  return apiFetch<{ alert: PriceAlertRecord }>("/api/alerts", {
+): Promise<CreatePriceAlertResponse> {
+  return apiFetch<CreatePriceAlertResponse>("/api/alerts", {
     method: "POST",
     headers: buildCaptchaHeaders(captcha),
     body: JSON.stringify(input),
   });
 }
 
-export function fetchAlertsByEmail(
-  email: string
-): Promise<{ alerts: PriceAlertRecord[] }> {
-  return apiFetch<{ alerts: PriceAlertRecord[] }>(
-    `/api/alerts?email=${encodeURIComponent(email)}`
-  );
+export function reportWrongPrice(
+  input: ReportWrongPriceInput
+): Promise<{ ok?: boolean }> {
+  return apiFetch<{ ok?: boolean }>("/api/reports", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function triggerManualScrape(options?: {
