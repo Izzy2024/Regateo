@@ -56,22 +56,18 @@ export function Header() {
           onClick={() => setActiveView("catalogo")}
           className="group flex items-center gap-2.5 text-left cursor-pointer"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#E64825] text-white transition-colors group-hover:bg-[#CF3C1C]">
-            <svg
-              viewBox="0 0 24 24"
-              className="h-4 w-4"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M5.5 18.5V5.5h6.75c2.7 0 4.5 1.55 4.5 3.95 0 1.8-1 3.15-2.7 3.7L17.5 18.5h-3.25l-2.7-4.55H8.5v4.55H5.5zm3-6.85h3.55c1.15 0 1.85-.55 1.85-1.55s-.7-1.55-1.85-1.55H8.5v3.1z"
-                fill="currentColor"
-              />
-            </svg>
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#E7E5DF] bg-white p-1 shadow-[0_1px_2px_rgba(17,19,21,0.04)] transition-transform duration-200 group-hover:scale-105 group-hover:border-[#FBCFC3]">
+            <img
+              src="/logo-mark.webp"
+              alt="Logo de Regateo"
+              width={192}
+              height={192}
+              className="h-full w-full object-contain"
+            />
           </span>
           <span className="flex flex-col leading-none">
-            <span className="text-[16px] font-extrabold tracking-[-0.03em] text-[#111315]">
-              Regateo<span className="text-[#E64825]">App</span>
+            <span className="text-[18px] font-extrabold tracking-[-0.035em] text-[#111315]">
+              Regateo
             </span>
             <span className="mt-0.5 hidden text-[11px] font-medium text-[#666D7C] sm:block">
               Precios en Panamá · USD

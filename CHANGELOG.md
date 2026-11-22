@@ -1,6 +1,13 @@
-# Changelog — RegateoApp
+# Changelog — Regateo
 
 Todos los cambios relevantes del proyecto se documentan aquí siguiendo [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
+
+## [0.5.1] - 2026-11-21
+
+### Identidad visual "Regateo" y Mascota Interactiva en el Hero
+- **Rebrand a "Regateo":** eliminada la palabra "App" del nombre visible de marca en Header, Footer, metadatos HTML/OG, PWA (`manifest.webmanifest`), páginas SEO (`/p/:slug`, `/c/:category`, `/tienda/:slug`), correos de alertas/recuperación y Regateo AI.
+- **Nuevo logo oficial optimizado (`logo-mark.webp`, `favicon.png`, `logo-192.png`, `logo-512.png`):** extracción con transparencia limpia desde `logo.jpg` (14.4 KB WebP para carga instantánea en 4G) aplicado en Header, Footer, favicon e íconos PWA.
+- **Mascota interactiva reactiva por categoría (`HeroMascotStage.tsx` + `mascota-hero.webp`):** ubicada junto al buscador del Hero con transparencia recortada al contorno (53.4 KB WebP), animación de levitación GPU-composited, inclinación 3D spring al puntero, globo de diálogo dinámico (reactivo tanto a la categoría activa como a lo que escribe el usuario en el buscador), badge flotante sobre el dedo señalando la categoría seleccionada, dock rápido de categorías y modo compacto móvil (respetando `prefers-reduced-motion`).
 
 ## [0.5.0] - 2026-11-21
 

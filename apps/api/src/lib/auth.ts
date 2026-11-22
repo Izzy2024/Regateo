@@ -62,12 +62,12 @@ export const auth = betterAuth({
           body: JSON.stringify({
             from:
               process.env.ALERTS_FROM_EMAIL ??
-              "RegateoApp <onboarding@resend.dev>",
+              "Regateo <onboarding@resend.dev>",
             to: target.email,
-            subject: "Restablece tu contraseña — RegateoApp",
+            subject: "Restablece tu contraseña — Regateo",
             html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;color:#0f172a">
 <h2>Restablece tu contraseña</h2>
-<p>Hola ${target.name}. Recibimos una solicitud para restablecer la contraseña de tu cuenta RegateoApp.</p>
+<p>Hola ${target.name}. Recibimos una solicitud para restablecer la contraseña de tu cuenta Regateo.</p>
 <p><a href="${resetUrl}" style="display:inline-block;background:#e11d48;color:#fff;padding:0.75rem 1.5rem;border-radius:0.5rem;text-decoration:none">Crear nueva contraseña</a></p>
 <p style="color:#64748b;font-size:0.85rem">Si no fuiste tú, ignora este correo y tu contraseña seguirá igual.</p>
 </div>`,

@@ -264,7 +264,7 @@ describe("formatChannelDealsText", () => {
   test("mensaje claro cuando no hay ofertas", () => {
     const text = formatChannelDealsText([], { apiUrl: "https://api.x" });
     expect(text).toContain("no hay ofertas con ahorro verificado");
-    expect(text).toContain("RegateoApp");
+    expect(text).toContain("Regateo");
   });
 
   test("redondea porcentajes con un decimal", () => {

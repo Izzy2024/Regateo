@@ -76,7 +76,7 @@ export function formatChannelDealsText(
   }).format(new Date());
 
   const header = [
-    "🔥 *RegateoApp · Ofertas verificadas en Panamá*",
+    "🔥 *Regateo · Ofertas verificadas en Panamá*",
     `📅 ${date} · precios reales de tiendas panameñas`,
     "",
   ];
@@ -86,7 +86,7 @@ export function formatChannelDealsText(
       ...header,
       "Hoy no hay ofertas con ahorro verificado entre 2+ tiendas.",
       "",
-      "_Compara precios reales antes de comprar · RegateoApp_",
+      "_Compara precios reales antes de comprar · Regateo_",
     ].join("\n");
   }
 
@@ -107,7 +107,7 @@ export function formatChannelDealsText(
   return [
     ...header,
     ...body,
-    "_Compras locales, garantía local. Compara antes de regatear · RegateoApp_",
+    "_Compras locales, garantía local. Compara antes de regatear · Regateo_",
   ].join("\n");
 }
 
@@ -194,7 +194,7 @@ interface UserDigest {
 }
 
 function buildDigestEmail(user: UserDigest, apiUrl: string): { subject: string; html: string } {
-  const subject = "🔥 Tus favoritos bajaron de precio · RegateoApp";
+  const subject = "🔥 Tus favoritos bajaron de precio · Regateo";
   const items = user.items
     .map((item) => {
       const drop = item.saved_price_cents - item.best_price_cents;
@@ -214,7 +214,7 @@ function buildDigestEmail(user: UserDigest, apiUrl: string): { subject: string; 
 <html lang="es"><body style="margin:0;padding:24px;background:#f8fafc;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#0f172a">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px">
     <tr><td style="padding:28px">
-      <p style="margin:0 0 6px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#0d9488">RegateoApp · Resumen semanal</p>
+      <p style="margin:0 0 6px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#0d9488">Regateo · Resumen semanal</p>
       <h1 style="margin:0 0 8px;font-size:22px">Tus favoritos bajaron de precio</h1>
       <p style="margin:0 0 20px;color:#475569">Hola ${user.name ?? "vecino"}, tienes ${
         user.items.length
@@ -241,7 +241,7 @@ async function sendResendEmail(
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        from: process.env.ALERTS_FROM_EMAIL ?? "RegateoApp <alertas@regateoapp.com>",
+        from: process.env.ALERTS_FROM_EMAIL ?? "Regateo <alertas@regateoapp.com>",
         to: [email],
         subject,
         html,

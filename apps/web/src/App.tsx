@@ -368,7 +368,7 @@ export function App() {
                       <p className="mt-1 max-w-md text-sm text-[#525866]">
                         {productsQuery.error instanceof Error
                           ? productsQuery.error.message
-                          : "Verifica que la API de RegateoApp esté corriendo."}
+                          : "Verifica que la API de Regateo esté corriendo."}
                       </p>
                       <Button
                         variant="primary"
@@ -549,22 +549,19 @@ export function App() {
         <div className="mx-auto max-w-[1360px] px-4 py-8 sm:px-6 lg:px-8">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div className="flex items-start gap-2.5">
-              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#E64825] text-white">
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-3.5 w-3.5"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M5.5 18.5V5.5h6.75c2.7 0 4.5 1.55 4.5 3.95 0 1.8-1 3.15-2.7 3.7L17.5 18.5h-3.25l-2.7-4.55H8.5v4.55H5.5zm3-6.85h3.55c1.15 0 1.85-.55 1.85-1.55s-.7-1.55-1.85-1.55H8.5v3.1z"
-                    fill="currentColor"
-                  />
-                </svg>
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#E7E5DF] bg-white p-1 shadow-[0_1px_2px_rgba(17,19,21,0.03)]">
+                <img
+                  src="/logo-mark.webp"
+                  alt="Logo de Regateo"
+                  width={192}
+                  height={192}
+                  loading="lazy"
+                  className="h-full w-full object-contain"
+                />
               </span>
               <div>
-                <div className="text-sm font-extrabold tracking-[-0.02em] text-[#111315]">
-                  Regateo<span className="text-[#E64825]">App</span>
+                <div className="text-[15px] font-extrabold tracking-[-0.03em] text-[#111315]">
+                  Regateo
                 </div>
                 <p className="mt-0.5 text-xs text-[#525866]">
                   Comparador independiente de electrónica en Panamá ·{" "}
@@ -600,11 +597,11 @@ export function App() {
 
           <div className="mt-6 flex flex-col gap-2 border-t border-[#EFECE5] pt-5 text-[11px] leading-relaxed text-[#666D7C] sm:flex-row sm:items-center sm:justify-between">
             <p>
-              RegateoApp no vende productos ni procesa pagos. Todos los enlaces
+              Regateo no vende productos ni procesa pagos. Todos los enlaces
               dirigen a las tiendas oficiales para verificar el precio final.
             </p>
             <p className="shrink-0 font-mono text-[11px] text-[#666D7C]">
-              © {new Date().getFullYear()} RegateoApp · Panamá (USD)
+              © {new Date().getFullYear()} Regateo · Panamá (USD)
             </p>
           </div>
         </div>

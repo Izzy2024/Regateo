@@ -562,7 +562,7 @@ export function ProductDetailModal() {
     if (!isAuthenticated) {
       setAuthOpen(true, {
         mode: "signup",
-        hint: "Las listas de compra y presupuestos inteligentes se guardan en tu cuenta gratis de RegateoApp.",
+        hint: "Las listas de compra y presupuestos inteligentes se guardan en tu cuenta gratis de Regateo.",
       });
       return;
     }
@@ -629,7 +629,7 @@ export function ProductDetailModal() {
         : "";
     const text = `${product.canonicalName} por ${formatUsd(
       product.bestPriceCents
-    )} en ${product.bestStore?.name ?? "Panamá"}${savingsSuffix}. Compara precios en RegateoApp: ${shareUrl}`;
+    )} en ${product.bestStore?.name ?? "Panamá"}${savingsSuffix}. Compara precios en Regateo: ${shareUrl}`;
     window.open(
       `https://wa.me/?text=${encodeURIComponent(text)}`,
       "_blank",

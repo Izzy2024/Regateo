@@ -237,7 +237,7 @@ export function AuthModal() {
       maxWidthClass="max-w-md"
       title={
         user
-          ? "Mi cuenta en RegateoApp"
+          ? "Mi cuenta en Regateo"
           : flow === "forgot"
           ? "Recupera tu contraseña"
           : flow === "reset"

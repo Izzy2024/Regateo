@@ -68,10 +68,10 @@ export function PrivacyPolicyView() {
           Privacidad y Protección de Datos
         </p>
         <h1 className="mt-2 text-2xl font-extrabold tracking-[-0.03em] text-[#111315] sm:text-3xl">
-          Política de Privacidad de RegateoApp
+          Política de Privacidad de Regateo
         </h1>
         <p className="mt-3 max-w-3xl text-sm leading-relaxed text-[#525866] sm:text-[15px]">
-          En <strong className="font-semibold text-[#111315]">RegateoApp</strong>{" "}
+          En <strong className="font-semibold text-[#111315]">Regateo</strong>{" "}
           creemos en la transparencia total: comparamos precios de tecnología en
           Panamá sin vender tus datos personales ni rastrear tu navegación con
           fines publicitarios. Este documento explica qué datos tratamos, para
@@ -188,14 +188,14 @@ export function PrivacyPolicyView() {
             <div className="mt-4 space-y-3 text-sm leading-relaxed text-[#525866]">
               <p>
                 <strong className="font-semibold text-[#111315]">
-                  RegateoApp
+                  Regateo
                 </strong>{" "}
                 es una plataforma tecnológica independiente de comparación de
                 precios de electrónica y cómputo que opera para usuarios en la
                 República de Panamá.
               </p>
               <p>
-                RegateoApp{" "}
+                Regateo{" "}
                 <strong className="font-semibold text-[#111315]">
                   no vende productos directamente, no gestiona inventarios ni
                   procesa tarjetas de crédito, transferencias o pagos en línea
@@ -583,7 +583,7 @@ export function PrivacyPolicyView() {
             </div>
             <div className="mt-4 space-y-3 text-sm leading-relaxed text-[#525866]">
               <p>
-                Los precios y disponibilidad mostrados en RegateoApp son{" "}
+                Los precios y disponibilidad mostrados en Regateo son{" "}
                 <strong className="font-semibold text-[#111315]">
                   referenciales
                 </strong>{" "}
@@ -593,7 +593,7 @@ export function PrivacyPolicyView() {
               </p>
               <p>
                 Al hacer clic en cualquier oferta para comprar o verificar un
-                producto, abandonas RegateoApp y te diriges al sitio web oficial
+                producto, abandonas Regateo y te diriges al sitio web oficial
                 del comercio correspondiente, el cual opera bajo sus propios
                 términos de venta y política de privacidad:
               </p>

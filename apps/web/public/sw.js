@@ -1,11 +1,17 @@
-/* RegateoApp Service Worker — shell estático ligero y seguro.
+/* Regateo Service Worker — shell estático ligero y seguro.
  *
  * Regla de oro de precios honestos: NUNCA cacheamos respuestas de `/api/`
  * ni redirects de `/out/`; siempre van network-only para que el usuario
  * jamás vea un precio viejo.
  */
-const CACHE_NAME = "regateoapp-shell-v1";
-const SHELL_ASSETS = ["/", "/manifest.webmanifest", "/favicon.svg"];
+const CACHE_NAME = "regateo-shell-v2";
+const SHELL_ASSETS = [
+  "/",
+  "/manifest.webmanifest",
+  "/favicon.png",
+  "/logo-mark.webp",
+  "/mascota-hero.webp",
+];
 const NEVER_CACHE = [/^\/api\//, /^\/out\//];
 
 self.addEventListener("install", (event) => {

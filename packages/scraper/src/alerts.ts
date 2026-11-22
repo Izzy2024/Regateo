@@ -72,7 +72,7 @@ function apiBaseUrl(): string {
 }
 
 function fromEmail(): string {
-  return process.env.ALERTS_FROM_EMAIL ?? "RegateoApp <alertas@regateoapp.com>";
+  return process.env.ALERTS_FROM_EMAIL ?? "Regateo <alertas@regateoapp.com>";
 }
 
 function formatUsd(cents: number): string {
@@ -96,7 +96,7 @@ function buildEmailHtml(alert: AlertRow): string {
 <html lang="es"><body style="margin:0;padding:24px;background:#f8fafc;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#0f172a">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px">
     <tr><td style="padding:28px 28px 8px">
-      <p style="margin:0 0 6px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:${alert.store_color}">RegateoApp · Alerta de precio</p>
+      <p style="margin:0 0 6px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:${alert.store_color}">Regateo · Alerta de precio</p>
       <h1 style="margin:0;font-size:22px;line-height:1.3">🔥 ${alert.product_name}</h1>
     </td></tr>
     <tr><td style="padding:8px 28px 0">
@@ -115,7 +115,7 @@ function buildEmailHtml(alert: AlertRow): string {
     </td></tr>
     <tr><td style="padding:0 28px 24px;border-top:1px solid #e2e8f0">
       <p style="margin:16px 0 0;font-size:12px;color:#94a3b8">
-        Recibes este correo porque creaste una alerta en RegateoApp. Precios verificados
+        Recibes este correo porque creaste una alerta en Regateo. Precios verificados
         directamente en la tienda; pueden cambiar sin previo aviso.
       </p>
     </td></tr>

@@ -131,9 +131,9 @@ async function sendAlertConfirmationEmail(
     },
     body: JSON.stringify({
       from:
-        process.env.EMAIL_FROM ?? "RegateoApp <onboarding@resend.dev>",
+        process.env.EMAIL_FROM ?? "Regateo <onboarding@resend.dev>",
       to,
-      subject: "Confirma tu alerta de precio — RegateoApp",
+      subject: "Confirma tu alerta de precio — Regateo",
       html: `<p>Hola! Solicitaste una alerta de precio para <strong>${productName}</strong>.</p><p>Confírmala aquí: <a href="${confirmUrl}">Activar mi alerta</a></p><p>Si no fuiste tú, ignora este correo.</p>`,
     }),
     signal: AbortSignal.timeout(5000),
@@ -268,7 +268,7 @@ function seoCollectionHtml(input: {
 <meta name="description" content="${escapeHtml(input.description)}">
 <link rel="canonical" href="${input.canonicalPath}">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="RegateoApp">
+<meta property="og:site_name" content="Regateo">
 <meta property="og:title" content="${escapeHtml(input.title)}">
 <meta property="og:description" content="${escapeHtml(input.description)}">
 <meta name="twitter:card" content="summary">
@@ -279,7 +279,7 @@ function seoCollectionHtml(input: {
 <h1 style="color:${input.accentColor}">${escapeHtml(input.heading)}</h1>
 <p>${escapeHtml(input.lead)}</p>
 <ul>${itemListHtml}</ul>
-<p><a href="${input.spaUrl}" style="color:#e11d48">Comparar precios completos en RegateoApp</a></p>
+<p><a href="${input.spaUrl}" style="color:#e11d48">Comparar precios completos en Regateo</a></p>
 </main>
 <script>setTimeout(function(){window.location.replace("${input.spaUrl}");},1500);</script>
 </body>
@@ -575,8 +575,8 @@ const routes = app
         confirmed = rows.length > 0;
       }
       const html = confirmed
-        ? `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Alerta confirmada — RegateoApp</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}div{text-align:center;max-width:480px;padding:2rem}h1{font-size:1.4rem}a{color:#e11d48}</style></head><body><div><h1>¡Alerta confirmada! 🔔</h1><p>Te avisaremos por correo cuando el precio baje al nivel que elegiste.</p><p><a href="${webUrl}">Volver a RegateoApp</a></p></div></body></html>`
-        : `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Enlace inválido — RegateoApp</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}div{text-align:center;max-width:480px;padding:2rem}a{color:#e11d48}</style></head><body><div><h1>Enlace de confirmación inválido</h1><p>El enlace no existe o ya fue utilizado.</p><p><a href="${webUrl}">Volver a RegateoApp</a></p></div></body></html>`;
+        ? `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Alerta confirmada — Regateo</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}div{text-align:center;max-width:480px;padding:2rem}h1{font-size:1.4rem}a{color:#e11d48}</style></head><body><div><h1>¡Alerta confirmada! 🔔</h1><p>Te avisaremos por correo cuando el precio baje al nivel que elegiste.</p><p><a href="${webUrl}">Volver a Regateo</a></p></div></body></html>`
+        : `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Enlace inválido — Regateo</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}div{text-align:center;max-width:480px;padding:2rem}a{color:#e11d48}</style></head><body><div><h1>Enlace de confirmación inválido</h1><p>El enlace no existe o ya fue utilizado.</p><p><a href="${webUrl}">Volver a Regateo</a></p></div></body></html>`;
       return c.body(html, confirmed ? 200 : 404, {
         "content-type": "text/html; charset=UTF-8",
       });
@@ -1054,9 +1054,9 @@ const routes = app
 
     if (!product) {
       return c.body(
-        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\"><title>Producto no encontrado — RegateoApp</title></head><body><h1>Producto no encontrado</h1><p><a href=\"" +
+        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\"><title>Producto no encontrado — Regateo</title></head><body><h1>Producto no encontrado</h1><p><a href=\"" +
           webUrl +
-          "\">Ir a RegateoApp</a></p></body></html>",
+          "\">Ir a Regateo</a></p></body></html>",
         404,
         { "content-type": "text/html; charset=UTF-8" }
       );
@@ -1075,7 +1075,7 @@ const routes = app
     const bestUsd = formatUsdFromCents(product.bestPriceCents);
     const savingsUsd =
       product.savingsCents > 0 ? formatUsdFromCents(product.savingsCents) : null;
-    const title = `${product.canonicalName} desde ${bestUsd} | RegateoApp`;
+    const title = `${product.canonicalName} desde ${bestUsd} | Regateo`;
     const description =
       `Compara precios de ${product.canonicalName} en ${product.storeCount} tienda${
         product.storeCount === 1 ? "" : "s"
@@ -1116,7 +1116,7 @@ const routes = app
 <meta name="description" content="${escapeHtml(description)}">
 <link rel="canonical" href="${origin}/p/${slug}">
 <meta property="og:type" content="product">
-<meta property="og:site_name" content="RegateoApp">
+<meta property="og:site_name" content="Regateo">
 <meta property="og:title" content="${escapeHtml(title)}">
 <meta property="og:description" content="${escapeHtml(description)}">
 <meta property="og:image" content="${escapeHtml(product.imageUrl ?? "")}">
@@ -1130,7 +1130,7 @@ const routes = app
 <p>Mejor precio hoy: <strong style="font-variant-numeric:tabular-nums">${bestUsd}</strong> en ${escapeHtml(
       product.bestStore?.name ?? "la tienda con mejor precio"
     )}${savingsUsd ? ` — ahorra hasta ${savingsUsd} comparando tiendas` : ""}.</p>
-<p><a href="${spaUrl}" style="color:#e11d48">Ver comparación completa de precios en RegateoApp</a></p>
+<p><a href="${spaUrl}" style="color:#e11d48">Ver comparación completa de precios en Regateo</a></p>
 </main>
 <script>setTimeout(function(){window.location.replace(decodeURIComponent(encodeURIComponent("${spaUrl.replace(/"/g, "%22")}")));},1500);</script>
 </body>
@@ -1169,9 +1169,9 @@ const routes = app
     const category = c.req.param("category") as ProductCategory;
     if (!PRODUCT_CATEGORIES.includes(category)) {
       return c.body(
-        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-\"><title>Categoría no encontrada — RegateoApp</title></head><body><h1>Categoría no encontrada</h1><p><a href=\"" +
+        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\"><title>Categoría no encontrada — Regateo</title></head><body><h1>Categoría no encontrada</h1><p><a href=\"" +
           webUrl +
-          "\">Ir a RegateoApp</a></p></body></html>",
+          "\">Ir a Regateo</a></p></body></html>",
         404,
         { "content-type": "text/html; charset=UTF-8" }
       );
@@ -1194,11 +1194,11 @@ const routes = app
 
     const label = CATEGORY_LABELS[category];
     const spaUrl = `${webUrl}/?categoria=${category}`;
-    const description = `Compara precios de ${label} en tiendas de Panamá con RegateoApp: ${value.total} productos monitoreados, precios reales verificados y ahorro entre tiendas.`;
+    const description = `Compara precios de ${label} en tiendas de Panamá con Regateo: ${value.total} productos monitoreados, precios reales verificados y ahorro entre tiendas.`;
     const jsonLd = {
       "@context": "https://schema.org",
       "@type": "CollectionPage",
-      name: `${label} — Compara precios en Panamá | RegateoApp`,
+      name: `${label} — Compara precios en Panamá | Regateo`,
       url: `${origin}/c/${category}`,
       description,
       mainEntity: {
@@ -1215,7 +1215,7 @@ const routes = app
 
     return c.body(
       seoCollectionHtml({
-        title: `${label} — Compara precios en Panamá | RegateoApp`,
+        title: `${label} — Compara precios en Panamá | Regateo`,
         description,
         canonicalPath: `${origin}/c/${category}`,
         spaUrl,
@@ -1250,9 +1250,9 @@ const routes = app
 
     if (!store) {
       return c.body(
-        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-\"><title>Tienda no encontrada — RegateoApp</title></head><body><h1>Tienda no encontrada</h1><p><a href=\"" +
+        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\"><title>Tienda no encontrada — Regateo</title></head><body><h1>Tienda no encontrada</h1><p><a href=\"" +
           webUrl +
-          "\">Ir a RegateoApp</a></p></body></html>",
+          "\">Ir a Regateo</a></p></body></html>",
         404,
         { "content-type": "text/html; charset=UTF-8" }
       );
@@ -1270,11 +1270,11 @@ const routes = app
     });
 
     const spaUrl = `${webUrl}/?tienda=${slug}`;
-    const description = `Catálogo de ${store.name} monitoreado por RegateoApp: ${value.total} productos con precios reales verificados y comparados con otras tiendas de Panamá.`;
+    const description = `Catálogo de ${store.name} monitoreado por Regateo: ${value.total} productos con precios reales verificados y comparados con otras tiendas de Panamá.`;
     const jsonLd = {
       "@context": "https://schema.org",
       "@type": "CollectionPage",
-      name: `${store.name} — Precios verificados en Panamá | RegateoApp`,
+      name: `${store.name} — Precios verificados en Panamá | Regateo`,
       url: `${origin}/tienda/${slug}`,
       description,
       mainEntity: {
@@ -1291,7 +1291,7 @@ const routes = app
 
     return c.body(
       seoCollectionHtml({
-        title: `${store.name} — Precios verificados en Panamá | RegateoApp`,
+        title: `${store.name} — Precios verificados en Panamá | Regateo`,
         description,
         canonicalPath: `${origin}/tienda/${slug}`,
         spaUrl,
