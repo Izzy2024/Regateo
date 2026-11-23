@@ -110,10 +110,13 @@ export const auth = betterAuth({
   },
   trustedOrigins: [
     webUrl,
+    "https://regateo.org",
+    "https://www.regateo.org",
     "http://localhost:5173",
     "http://localhost:4173",
     "https://*.workers.dev",
     "https://*.regateo.pa",
+    "https://*.regateo.org",
     ...(process.env.ALLOWED_ORIGINS ?? "")
       .split(",")
       .map((s) => s.trim())

@@ -4,7 +4,12 @@ export default defineConfig({
   // Declare your Neon services here
   preview: {
     realtime: {
-      allowedOrigins: ["http://localhost:5173", "http://localhost:4173"],
+      allowedOrigins: [
+        "https://regateo.org",
+        "https://www.regateo.org",
+        "http://localhost:5173",
+        "http://localhost:4173",
+      ],
     },
   },
   auth: true,
@@ -14,7 +19,7 @@ export default defineConfig({
       source: "apps/api/src/neon-api.ts",
       env: {
         NODE_ENV: "production",
-        WEB_URL: { value: process.env.WEB_URL ?? "http://localhost:5173", required: false },
+        WEB_URL: { value: process.env.WEB_URL ?? "https://regateo.org", required: false },
         ALLOWED_ORIGINS: { value: process.env.ALLOWED_ORIGINS, required: false },
         BETTER_AUTH_SECRET: { value: process.env.BETTER_AUTH_SECRET, required: true },
         CRON_SECRET: { value: process.env.CRON_SECRET, required: true },
