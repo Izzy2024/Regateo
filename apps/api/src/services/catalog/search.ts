@@ -11,6 +11,7 @@ import {
   asc,
   desc,
   eq,
+  inArray,
   sql,
   products,
   storeListings,
@@ -30,6 +31,7 @@ import {
 } from "@regateo/shared";
 import {
   aggStats,
+  analyzeSearchQuery,
   buildConditions,
   buildListingDTOs,
   buildOrderBy,
@@ -47,6 +49,7 @@ import {
   type ListingStats,
   type ProductRowLite,
   type ScrapeRunDTO,
+  type SearchMetaDTO,
   type SqlCondition,
   type StatsColumnSet,
 } from "./shared";
@@ -64,8 +67,7 @@ export async function searchProducts(
   const agg: ListingStats | null = materialized ? null : listingStatsSubquery();
   const stats: StatsColumnSet = agg ? aggStats(agg) : materializedStats();
 
-  const conditions = buildConditions(query, stats);
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const searchPlan = query.q ? analyzeSearchQuery(query.q) : null;
 
   // Builder común: la vía agregada añade el innerJoin; la materializada usa
   // solo `products` (sorts/filtros sobre columnas indexadas).
@@ -75,17 +77,140 @@ export async function searchProducts(
     return agg ? qb.innerJoin(agg, eq(agg.productId, products.id)) : qb;
   };
 
-  const pageRows: ProductRowLite[] = await baseQuery()
-    .where(where)
-    .orderBy(...buildOrderBy(stats, query.sort, query.q))
-    .limit(query.limit)
-    .offset((query.page - 1) * query.limit);
+  // Helper de filtros rápidos cuando ya prefiltramos por `matchedBaseIds`
+  const buildFacetedWhere = (
+    matchedBaseIds: string[] | null,
+    override: Partial<ProductSearchQuery>,
+    usedFuzzy: boolean
+  ) => {
+    if (matchedBaseIds !== null) {
+      const fastConds = buildConditions(
+        {
+          ...query,
+          ...override,
+          // `q`, precio, stock y multiStore ya fueron evaluados en el escaneo único
+          q: undefined,
+          minPrice: undefined,
+          maxPrice: undefined,
+          inStockOnly: undefined,
+          multiStoreOnly: undefined,
+        },
+        stats
+      );
+      return and(
+        inArray(products.id, matchedBaseIds) as SqlCondition,
+        ...fastConds
+      );
+    }
+    const conds = buildConditions(
+      { ...query, ...override },
+      stats,
+      searchPlan,
+      { fuzzy: usedFuzzy }
+    );
+    return conds.length > 0 ? and(...conds) : undefined;
+  };
+
+  let matchedBaseIds: string[] | null = null;
+  let usedFuzzy = false;
+
+  // Cuando hay búsqueda textual (`q`), evaluamos el predicado textual (regex/unaccent/EXISTS)
+  // UNA sola vez para obtener los IDs candidatos base (sin category/brand/store), y reutilizamos
+  // esos IDs indexados por PK en pageRows, total, comparableCount y las 3 facetas (~6x más rápido).
+  if (query.q && searchPlan) {
+    const baseQueryNoFacets: ProductSearchQuery = {
+      ...query,
+      category: undefined,
+      brand: undefined,
+      store: undefined,
+    };
+    const strictBaseConds = buildConditions(baseQueryNoFacets, stats, searchPlan);
+    const strictBaseWhere =
+      strictBaseConds.length > 0 ? and(...strictBaseConds) : undefined;
+
+    const strictIdRows: Array<{ id: string }> = await baseQuery({
+      id: products.id,
+    }).where(strictBaseWhere);
+    let candidateIds = strictIdRows.map((row) => row.id);
+
+    // Fallback fuzzy pg_trgm: solo si no es SKU/código, hay tokens largos y
+    // la búsqueda estricta trajo 0 (o < 3 con token largo sin concepto).
+    if (
+      !searchPlan.isCodeOrSku &&
+      searchPlan.fuzzyTokens.length > 0 &&
+      (candidateIds.length === 0 ||
+        (candidateIds.length < 3 && searchPlan.hasUnmappedLongToken))
+    ) {
+      const fuzzyBaseConds = buildConditions(baseQueryNoFacets, stats, searchPlan, {
+        fuzzy: true,
+      });
+      const fuzzyBaseWhere =
+        fuzzyBaseConds.length > 0 ? and(...fuzzyBaseConds) : undefined;
+      const fuzzyIdRows: Array<{ id: string }> = await baseQuery({
+        id: products.id,
+      }).where(fuzzyBaseWhere);
+      if (fuzzyIdRows.length > candidateIds.length) {
+        candidateIds = fuzzyIdRows.map((row) => row.id);
+        usedFuzzy = true;
+      }
+    }
+
+    // Sin coincidencias tras estricto + fuzzy: retorno inmediato sin consultas extra
+    if (candidateIds.length === 0) {
+      trackSearchEvent(query.q, query.category ?? null, 0);
+      return {
+        items: [],
+        pagination: {
+          page: query.page,
+          limit: query.limit,
+          total: 0,
+          totalPages: 1,
+        },
+        facets: { categories: [], brands: [], stores: [] },
+        comparableCount: 0,
+        searchMeta: {
+          normalizedQuery: searchPlan.normalizedQuery,
+          matchedVia: usedFuzzy ? "fuzzy" : searchPlan.matchedVia,
+          expandedTerms: searchPlan.expandedTerms,
+        },
+      };
+    }
+
+    // Para conjuntos acotados (<= 3000 IDs, 99.9% de búsquedas) usamos PK index
+    if (candidateIds.length <= 3000) {
+      matchedBaseIds = candidateIds;
+    }
+  }
+
+  const activeWhere = buildFacetedWhere(matchedBaseIds, {}, usedFuzzy);
+  const categoryFacetWhere = buildFacetedWhere(
+    matchedBaseIds,
+    { category: undefined },
+    usedFuzzy
+  );
+  const brandFacetWhere = buildFacetedWhere(
+    matchedBaseIds,
+    { brand: undefined },
+    usedFuzzy
+  );
+  const storeFacetWhere = buildFacetedWhere(
+    matchedBaseIds,
+    { store: undefined },
+    usedFuzzy
+  );
 
   // comparableCount exacto: productos con 2+ tiendas DISTINTAS en stock
   const comparableAgg = db
     .select({ productId: storeListings.productId })
     .from(storeListings)
-    .where(eq(storeListings.inStock, true))
+    .where(
+      matchedBaseIds !== null
+        ? and(
+            eq(storeListings.inStock, true),
+            inArray(storeListings.productId, matchedBaseIds)
+          )
+        : eq(storeListings.inStock, true)
+    )
     .groupBy(storeListings.productId)
     .having(sql`count(distinct ${storeListings.storeId}) >= 2`)
     .as("comparable_stats");
@@ -98,28 +223,6 @@ export async function searchProducts(
   const comparableFinalQb = agg
     ? comparableQb.innerJoin(agg, eq(agg.productId, products.id))
     : comparableQb;
-
-  const [totalRows, comparableRows] = await Promise.all([
-    baseQuery({ total: sql<number>`count(*)::int` }).where(where),
-    comparableFinalQb.where(where),
-  ]);
-
-  const total = totalRows[0]?.total ?? 0;
-  const comparableCount = comparableRows[0]?.comparable ?? 0;
-
-  const listingRows = await fetchListingRows(pageRows.map((row) => row.id));
-  const items = pageRows.map((row) =>
-    buildSummaryDTO(row, buildListingDTOs(listingRows.get(row.id) ?? []))
-  );
-
-  // Facetas INDEPENDIENTES: al contar categorías se excluye el filtro
-  // category; al contar marcas se excluye brand; al contar tiendas se excluye
-  // store. Así las facetas nunca "desaparecen" al seleccionar un filtro.
-  const categoryFacetWhere = and(
-    ...buildConditions({ ...query, category: undefined }, stats)
-  );
-  const brandFacetWhere = and(...buildConditions({ ...query, brand: undefined }, stats));
-  const storeFacetWhere = and(...buildConditions({ ...query, store: undefined }, stats));
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const storeFacetQb: any = db
@@ -135,7 +238,25 @@ export async function searchProducts(
     ? storeFacetQb.innerJoin(agg, eq(agg.productId, products.id))
     : storeFacetQb;
 
-  const [categoryRows, brandRows, storeRows] = await Promise.all([
+  const [pageRows, totalRows, comparableRows, categoryRows, brandRows, storeRows]: [
+    ProductRowLite[],
+    Array<{ total: number }>,
+    Array<{ comparable: number }>,
+    Array<{ key: string; count: number }>,
+    Array<{ name: string | null; count: number }>,
+    Array<{ slug: string; name: string; count: number }>,
+  ] = await Promise.all([
+    baseQuery()
+      .where(activeWhere)
+      .orderBy(
+        ...buildOrderBy(stats, query.sort, query.q, searchPlan, {
+          fuzzy: usedFuzzy,
+        })
+      )
+      .limit(query.limit)
+      .offset((query.page - 1) * query.limit),
+    baseQuery({ total: sql<number>`count(*)::int` }).where(activeWhere),
+    comparableFinalQb.where(activeWhere),
     baseQuery({ key: products.category, count: sql<number>`count(*)::int` })
       .where(categoryFacetWhere)
       .groupBy(products.category)
@@ -150,6 +271,14 @@ export async function searchProducts(
       .groupBy(stores.slug, stores.name)
       .orderBy(desc(sql`count(distinct ${products.id})`)),
   ]);
+
+  const total = totalRows[0]?.total ?? 0;
+  const comparableCount = comparableRows[0]?.comparable ?? 0;
+
+  const listingRows = await fetchListingRows(pageRows.map((row) => row.id));
+  const items = pageRows.map((row) =>
+    buildSummaryDTO(row, buildListingDTOs(listingRows.get(row.id) ?? []))
+  );
 
   const facets: CatalogFacets = {
     categories: categoryRows
@@ -170,6 +299,14 @@ export async function searchProducts(
 
   trackSearchEvent(query.q ?? "", query.category ?? null, total);
 
+  const searchMeta: SearchMetaDTO | undefined = searchPlan
+    ? {
+        normalizedQuery: searchPlan.normalizedQuery,
+        matchedVia: usedFuzzy ? "fuzzy" : searchPlan.matchedVia,
+        expandedTerms: searchPlan.expandedTerms,
+      }
+    : undefined;
+
   return {
     items,
     pagination: {
@@ -180,6 +317,7 @@ export async function searchProducts(
     },
     facets,
     comparableCount,
+    searchMeta,
   };
 }
 

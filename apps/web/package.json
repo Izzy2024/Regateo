@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.0.1",
+    "@neon/realtime": "^0.2.1",
     "@regateo/shared": "workspace:*",
     "@tanstack/react-query": "^5.76.1",
     "class-variance-authority": "^0.7.1",

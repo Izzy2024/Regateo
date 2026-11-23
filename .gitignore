@@ -5,8 +5,11 @@ dist/
 .firecrawl/
 .env
 .env.local
+.env.local-backup
 .env.*.local
 *.log
+*.swp
 .DS_Store
 coverage/
 .agent-briefs/
+.neon

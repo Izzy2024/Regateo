@@ -5,6 +5,7 @@ import type {
   BuyingGuideDTO,
   CreatePriceAlertInput,
   CreateShoppingListInput,
+  CreateStoreRequestInput,
   FavoriteProductDTO,
   ProductCategory,
   ProductDetailDTO,
@@ -13,6 +14,7 @@ import type {
   ReportWrongPriceInput,
   ShoppingListDTO,
   SimilarProductDTO,
+  StoreRequestSummaryDTO,
   StoreStatusDTO,
   UpdateAlertInput,
   UserAlertDTO,
@@ -44,6 +46,12 @@ export function buildOutboundUrl(
   return sanitizeExternalUrl(fallbackUrl);
 }
 
+export interface SearchMeta {
+  normalizedQuery: string;
+  matchedVia: "exact" | "synonym" | "fuzzy";
+  expandedTerms: string[];
+}
+
 export interface ProductsResponse {
   items: ProductSummaryDTO[];
   pagination: {
@@ -61,6 +69,7 @@ export interface ProductsResponse {
     cached: boolean;
     lastScrapedAt: string | null;
     comparableCount?: number;
+    search?: SearchMeta;
   };
 }
 
@@ -292,6 +301,48 @@ export function reportWrongPrice(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export interface StoreRequestResponse {
+  ok: boolean;
+  alreadyMonitored?: boolean;
+  isDuplicateVote?: boolean;
+  storeName?: string;
+  request?: StoreRequestSummaryDTO;
+  txid?: string | null;
+  message: string;
+}
+
+export interface PopularStoreRequestsResponse {
+  items: StoreRequestSummaryDTO[];
+  meta: { cached: boolean };
+}
+
+export interface SealedStoreRequestsResponse {
+  enabled: boolean;
+  url: string | null;
+  sealed: {
+    capability: string;
+    expiresAt: number;
+    queryFingerprint: string;
+  } | null;
+}
+
+export function submitStoreRequest(
+  input: CreateStoreRequestInput
+): Promise<StoreRequestResponse> {
+  return apiFetch<StoreRequestResponse>("/api/store-requests", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchPopularStoreRequests(): Promise<PopularStoreRequestsResponse> {
+  return apiFetch<PopularStoreRequestsResponse>("/api/store-requests/popular");
+}
+
+export function fetchSealedStoreRequests(): Promise<SealedStoreRequestsResponse> {
+  return apiFetch<SealedStoreRequestsResponse>("/api/realtime/store-requests");
 }
 
 export function triggerManualScrape(options?: {

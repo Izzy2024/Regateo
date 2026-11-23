@@ -131,7 +131,7 @@ export async function toolSearchProducts(input: {
       (PRODUCT_CATEGORIES as readonly string[]).includes(input.category)
         ? (input.category as ProductCategory)
         : undefined,
-    sort: "best-savings",
+    sort: input.query ? "relevance" : "best-savings",
     page: 1,
     limit: Math.min(Math.max(input.limit ?? 5, 1), 10),
   });
@@ -233,7 +233,7 @@ async function resolveBestMatchForAi(
     seen.add(candidate);
     const result = await searchProducts({
       q: candidate,
-      sort: "best-savings",
+      sort: "relevance",
       page: 1,
       limit: 1,
     });

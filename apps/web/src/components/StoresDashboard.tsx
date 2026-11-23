@@ -5,11 +5,13 @@ import {
   ArrowUpRight,
   CalendarClock,
   CheckCircle2,
+  MessageSquarePlus,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { useMemo } from "react";
 import { fetchStores } from "@/lib/api";
+import { useFilterStore } from "@/store/useFilterStore";
 import {
   formatDateTimeEs,
   formatRelativeEs,
@@ -23,10 +25,15 @@ import { Skeleton } from "./ui/skeleton";
 
 const PLATFORM_LABELS: Record<string, string> = {
   shopify: "Shopify JSON",
-  magento: "Magento / Firecrawl",
+  magento: "Magento 2 GraphQL",
   "firecrawl-html": "Firecrawl HTML",
   custom: "Adaptador propio",
 };
+
+const STORE_SKELETON_KEYS = Array.from(
+  { length: PANAMA_STORES.length },
+  (_, idx) => `store-skeleton-${idx}`
+);
 
 interface DisplayStore extends StoreStatusDTO {
   description?: string;
@@ -38,6 +45,7 @@ export function StoresDashboard() {
     queryFn: fetchStores,
     staleTime: 30_000,
   });
+  const setSuggestStoreOpen = useFilterStore((s) => s.setSuggestStoreOpen);
 
   const apiStores = data?.stores ?? [];
   const recentRuns = data?.recentRuns ?? [];
@@ -96,15 +104,22 @@ export function StoresDashboard() {
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-[#525866]">
               Rastreamos automáticamente precios reales en USD de los principales comercios
-              de tecnología, cómputo y línea blanca en Panamá con un{" "}
-              <strong>barrido diario (08:00 UTC)</strong>, con verificación de enlaces
+              de tecnología, cómputo y línea blanca en Panamá —{" "}
+              <strong>{PANAMA_STORES.length} tiendas monitoreadas</strong> — con un{" "}
+              <strong>barrido diario (08:00 UTC)</strong>, verificación de enlaces
               directos y registro histórico.
             </p>
           </div>
 
-          <div className="inline-flex items-center gap-2 rounded-xl border border-[#A7F3D0] bg-[#ECFDF5] px-3.5 py-2 text-xs font-semibold text-[#047857]">
-            <ShieldCheck className="h-4 w-4 shrink-0" />
-            <span>Sincronización interna automática · Barrido diario</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-xl border border-[#A7F3D0] bg-[#ECFDF5] px-3.5 py-2 text-xs font-semibold text-[#047857]">
+              <ShieldCheck className="h-4 w-4 shrink-0" />
+              <span>Sincronización interna automática · Barrido diario</span>
+            </div>
+            <Button variant="brand" size="sm" onClick={() => setSuggestStoreOpen(true)}>
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              Sugerir tienda
+            </Button>
           </div>
         </div>
       </BlurFade>
@@ -120,9 +135,10 @@ export function StoresDashboard() {
               Frecuencia automatizada: barrido diario (08:00 UTC)
             </p>
             <p className="mt-0.5 text-xs text-[#525866]">
-              Motor híbrido: adaptadores Shopify JSON para Multimax, Rodelag, Almacenes
-              Titán y Photura + Magento/Firecrawl para Panafoto, Do it Center, Yoytec y
-              PTYTEC.
+              Motor híbrido con {activeIndexedStoresCount} tiendas: Shopify JSON para Multimax, Rodelag,
+              Almacenes Titán y Photura + Magento 2 GraphQL para Panafoto, Raenco y
+              Samsung Shop PA + VTEX para LG Shop PA y Sony Store PA + Algolia para eVision Store +
+              APIs propias para PlayNTrade, Do it Center, Yoytec y PTYTEC.
             </p>
           </div>
         </div>
@@ -147,9 +163,9 @@ export function StoresDashboard() {
       <div className="mt-6">
         {isLoading ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {Array.from({ length: 8 }).map((_, idx) => (
+            {STORE_SKELETON_KEYS.map((key) => (
               <div
-                key={idx}
+                key={key}
                 className="rounded-xl border border-[#E7E5DF] bg-white p-5 space-y-3"
               >
                 <Skeleton className="h-6 w-1/2" />
@@ -323,6 +339,26 @@ export function StoresDashboard() {
           </div>
         </div>
       ) : null}
+
+      {/* Suggest store banner */}
+      <div className="mt-8 flex flex-col items-start gap-3 rounded-xl border border-[#E7E5DF] bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#FEF2EE] text-[#E64825]">
+            <MessageSquarePlus className="h-4 w-4" strokeWidth={2} />
+          </span>
+          <div>
+            <p className="text-sm font-bold text-[#111315]">
+              ¿Falta tu tienda favorita de Panamá?
+            </p>
+            <p className="mt-0.5 text-xs text-[#525866]">
+              Sugiérela y la comunidad puede votar para priorizarla.
+            </p>
+          </div>
+        </div>
+        <Button variant="brand" size="sm" onClick={() => setSuggestStoreOpen(true)}>
+          Sugerir tienda
+        </Button>
+      </div>
     </section>
   );
 }

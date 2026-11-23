@@ -115,6 +115,11 @@
     0 2px 8px rgba(17, 19, 21, 0.06);
 }
 
+.product-card-cv {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 460px;
+}
+
 /* Lightweight GPU-composited animations for Magic UI primitives */
 @keyframes regateo-marquee {
   from {

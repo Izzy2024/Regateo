@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { createOpenAI } from "@ai-sdk/openai";
 import { streamText, tool } from "ai";
-import { type AiChatRequest } from "@regateo/shared";
+import { PANAMA_STORES, type AiChatRequest } from "@regateo/shared";
 import {
   toolCompareProductPrices,
   toolGetBestDeals,
@@ -18,27 +18,140 @@ import {
 } from "../services/catalog";
 import { logger, trackLlmGeneration } from "../lib/observability";
 
-function resolveLlmConfig() {
+// ---------------------------------------------------------------------------
+// Tiendas monitoreadas: la lista se deriva de PANAMA_STORES para que el copy
+// del prompt y de las tools nunca quede desactualizado al sumar una tienda.
+// ---------------------------------------------------------------------------
+const MONITORED_STORE_NAMES = PANAMA_STORES.filter((store) => store.enabled).map(
+  (store) => store.name
+);
+
+/** "Multimax, Panafoto, …, y eVision Store" (13 tiendas activas en Panamá). */
+const MONITORED_STORES_LABEL =
+  MONITORED_STORE_NAMES.length > 1
+    ? `${MONITORED_STORE_NAMES.slice(0, -1).join(", ")} y ${
+        MONITORED_STORE_NAMES[MONITORED_STORE_NAMES.length - 1]
+      }`
+    : (MONITORED_STORE_NAMES[0] ?? "las tiendas de Panamá");
+
+const MONITORED_STORES_COUNT = MONITORED_STORE_NAMES.length;
+
+export interface LlmProviderConfig {
+  provider: "neon-ai-gateway" | "deepseek" | "openrouter";
+  apiKey: string;
+  baseURL: string;
+  model: string;
+}
+
+export function getNeonAiGatewayConfig() {
+  const rawBase = process.env.NEON_AI_GATEWAY_BASE_URL?.trim() || null;
+  const token = process.env.NEON_AI_GATEWAY_TOKEN?.trim() || null;
+  const baseURL = rawBase ? `${rawBase.replace(/\/+$/, "")}/v1` : null;
+  const model =
+    process.env.NEON_AI_GATEWAY_MODEL?.trim() ||
+    process.env.AI_MODEL?.trim() ||
+    "openai/gpt-4o-mini";
+
+  return {
+    configured: Boolean(baseURL && token),
+    baseURL,
+    token,
+    model,
+  };
+}
+
+export async function fetchNeonAiGatewayStatus(): Promise<{
+  configured: boolean;
+  reachable: boolean;
+  httpStatus: number | null;
+  totalModels: number;
+  enabledModels: number;
+  requiresCredits: boolean;
+  model: string;
+}> {
+  const cfg = getNeonAiGatewayConfig();
+  if (!cfg.configured || !cfg.baseURL || !cfg.token) {
+    return {
+      configured: false,
+      reachable: false,
+      httpStatus: null,
+      totalModels: 0,
+      enabledModels: 0,
+      requiresCredits: false,
+      model: cfg.model,
+    };
+  }
+
+  try {
+    const res = await fetch(`${cfg.baseURL}/models`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      return {
+        configured: true,
+        reachable: false,
+        httpStatus: res.status,
+        totalModels: 0,
+        enabledModels: 0,
+        requiresCredits: res.status === 402 || res.status === 403,
+        model: cfg.model,
+      };
+    }
+    const payload = (await res.json()) as {
+      data?: Array<{ enabled?: boolean; unavailable_reason?: string }>;
+    };
+    const models = Array.isArray(payload.data) ? payload.data : [];
+    const enabledCount = models.filter((m) => m.enabled !== false).length;
+    const requiresCredits =
+      models.length > 0 &&
+      enabledCount === 0 &&
+      models.some((m) => m.unavailable_reason === "paid_plan_required");
+    return {
+      configured: true,
+      reachable: true,
+      httpStatus: res.status,
+      totalModels: models.length,
+      enabledModels: enabledCount,
+      requiresCredits,
+      model: cfg.model,
+    };
+  } catch {
+    return {
+      configured: true,
+      reachable: false,
+      httpStatus: null,
+      totalModels: 0,
+      enabledModels: 0,
+      requiresCredits: false,
+      model: cfg.model,
+    };
+  }
+}
+
+function resolveLlmCandidates(): LlmProviderConfig[] {
+  const candidates: LlmProviderConfig[] = [];
   const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim();
   const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
 
   if (deepseekKey) {
-    return {
-      provider: "deepseek" as const,
+    candidates.push({
+      provider: "deepseek",
       apiKey: deepseekKey,
       baseURL: process.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com/v1",
       model: process.env.AI_MODEL?.trim() || "deepseek-chat",
-    };
+    });
   }
   if (openRouterKey) {
-    return {
-      provider: "openrouter" as const,
+    candidates.push({
+      provider: "openrouter",
       apiKey: openRouterKey,
       baseURL: process.env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai/api/v1",
       model: process.env.AI_MODEL?.trim() || "openai/gpt-4o-mini",
-    };
+    });
   }
-  return null;
+
+  return candidates;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,8 +282,7 @@ function buildAiTools() {
         toolSearchProducts(args),
     }),
     compareProductPrices: tool({
-      description:
-        "Compara los precios actuales de un producto entre todas las tiendas monitoreadas (Multimax, Panafoto, Rodelag, Almacenes Titán, Photura, Do it Center, Yoytec y PTYTEC). Recibe el nombre o el slug del producto.",
+      description: `Compara los precios actuales de un producto entre las ${MONITORED_STORES_COUNT} tiendas monitoreadas (${MONITORED_STORES_LABEL}). Recibe el nombre o el slug del producto.`,
       parameters: z.object({
         query: z.string().describe("Nombre o slug del producto a comparar"),
       }),
@@ -191,7 +303,7 @@ function buildAiTools() {
 const SYSTEM_PROMPT = `Eres "Regateo AI", el asistente de compras de Regateo, el comparador de precios de electrónica de Panamá.
 Reglas:
 - Responde SIEMPRE en español panameño, breve, útil y con precios en USD ($).
-- Usa las tools (searchProducts, compareProductPrices, getBestDeals) para dar datos reales de las tiendas monitoreadas (Multimax, Panafoto, Rodelag, Almacenes Titán, Photura, Do it Center, Yoytec y PTYTEC). Nunca inventes precios.
+- Usa las tools (searchProducts, compareProductPrices, getBestDeals) para dar datos reales de las ${MONITORED_STORES_COUNT} tiendas monitoreadas (${MONITORED_STORES_LABEL}). Nunca inventes precios.
 - Recomienda la tienda más barata con su enlace directo para verificar el precio.
 - Menciona el ahorro en USD cuando exista comparación entre tiendas.
 - Sé directo: máximo 3 recomendaciones por respuesta.`;
@@ -206,11 +318,17 @@ export function aiChatHandler(body: AiChatRequest): Response {
     .map(({ id: _id, role, content }) => ({ role, content }))
     .slice(-8);
   const userText = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
-  const llm = resolveLlmConfig();
+  const candidates = resolveLlmCandidates();
 
-  if (llm) {
+  if (candidates.length > 0) {
     return sseResponse(async (send) => {
-      await streamWithAiSdk(send, messages, llm);
+      for (const llm of candidates) {
+        const outcome = await streamWithAiSdk(send, messages, llm);
+        if (outcome === "completed") return;
+        // Si el proveedor falló antes de emitir texto/tools (p. ej. Neon AI Gateway sin créditos),
+        // probamos el siguiente candidato o caemos al flujo determinista sin romper el chat.
+      }
+      await streamDeterministic(send, userText);
     });
   }
 
@@ -221,13 +339,13 @@ export function aiChatHandler(body: AiChatRequest): Response {
 }
 
 // ---------------------------------------------------------------------------
-// Camino 1: Vercel AI SDK vía DeepSeek / OpenRouter
+// Camino 1: Vercel AI SDK vía Neon AI Gateway / DeepSeek / OpenRouter
 // ---------------------------------------------------------------------------
 async function streamWithAiSdk(
   send: (event: SseEvent) => void,
   messages: Array<{ role: "user" | "assistant" | "system"; content: string }>,
-  llm: NonNullable<ReturnType<typeof resolveLlmConfig>>
-): Promise<void> {
+  llm: LlmProviderConfig
+): Promise<"completed" | "fallback"> {
   const openai = createOpenAI({
     baseURL: llm.baseURL,
     apiKey: llm.apiKey,
@@ -244,40 +362,69 @@ async function streamWithAiSdk(
   });
 
   let fullText = "";
-  for await (const part of result.fullStream) {
-    switch (part.type) {
-      case "text-delta":
-        fullText += part.textDelta;
-        send({ type: "text-delta", delta: part.textDelta });
-        break;
-      case "tool-call":
-        send({
-          type: "tool-call",
-          toolCallId: part.toolCallId,
-          toolName: part.toolName,
-          state: "loading",
-          args: (part.args ?? {}) as Record<string, unknown>,
-        });
-        break;
-      case "tool-result":
-        send({
-          type: "tool-result",
-          toolCallId: part.toolCallId,
-          toolName: part.toolName,
-          state: "result",
-          result: part.result,
-        });
-        break;
-      case "error":
-        send({
-          type: "error",
-          message:
-            `El modelo de IA (${llm.provider}) no respondió. Verifica la API key o intenta de nuevo.`,
-        });
-        break;
-      default:
-        break;
+  let emittedOutput = false;
+  let hadError = false;
+
+  try {
+    for await (const part of result.fullStream) {
+      switch (part.type) {
+        case "text-delta":
+          emittedOutput = true;
+          fullText += part.textDelta;
+          send({ type: "text-delta", delta: part.textDelta });
+          break;
+        case "tool-call":
+          emittedOutput = true;
+          send({
+            type: "tool-call",
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            state: "loading",
+            args: (part.args ?? {}) as Record<string, unknown>,
+          });
+          break;
+        case "tool-result":
+          emittedOutput = true;
+          send({
+            type: "tool-result",
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            state: "result",
+            result: part.result,
+          });
+          break;
+        case "error":
+          hadError = true;
+          logger.warn("ai_provider_stream_error", {
+            provider: llm.provider,
+            model: llm.model,
+            emittedOutput,
+            error: part.error instanceof Error ? part.error.message : String(part.error),
+          });
+          break;
+        default:
+          break;
+      }
     }
+  } catch (error) {
+    hadError = true;
+    logger.warn("ai_provider_exception", {
+      provider: llm.provider,
+      model: llm.model,
+      emittedOutput,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  if (hadError && !emittedOutput) {
+    return "fallback";
+  }
+
+  if (hadError && emittedOutput) {
+    send({
+      type: "error",
+      message: `El modelo de IA (${llm.provider}) interrumpió la respuesta. Intenta de nuevo.`,
+    });
   }
 
   trackLlmGeneration({
@@ -288,6 +435,7 @@ async function streamWithAiSdk(
   });
 
   send({ type: "done" });
+  return "completed";
 }
 
 // ---------------------------------------------------------------------------

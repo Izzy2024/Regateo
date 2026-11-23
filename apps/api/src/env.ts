@@ -54,4 +54,11 @@ export const env = {
   openRouterApiKey: process.env.OPENROUTER_API_KEY,
   openRouterBaseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
   aiModel: process.env.AI_MODEL ?? "openai/gpt-4o-mini",
+  neonBranch: process.env.NEON_BRANCH,
+  neonAuthBaseUrl: process.env.NEON_AUTH_BASE_URL,
+  neonAuthJwksUrl: process.env.NEON_AUTH_JWKS_URL,
+  neonAiGatewayBaseUrl: process.env.NEON_AI_GATEWAY_BASE_URL,
+  neonAiGatewayToken: process.env.NEON_AI_GATEWAY_TOKEN,
+  neonRealtimeUrl: process.env.NEON_REALTIME_URL,
+  neonRealtimeSecret: process.env.NEON_REALTIME_SECRET,
 } as const;

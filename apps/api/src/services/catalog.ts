@@ -3,6 +3,7 @@
 //   import { searchProducts, getProductBySlug, ... } from "./services/catalog"
 // ============================================================================
 export * from "./catalog/shared";
+export * from "./catalog/search-intent";
 export * from "./catalog/search";
 export * from "./catalog/similar";
 export * from "./catalog/ai-tools";

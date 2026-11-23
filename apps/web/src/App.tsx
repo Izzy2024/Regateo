@@ -1,14 +1,16 @@
+import { PANAMA_STORES, type ProductSummaryDTO } from "@regateo/shared";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Search,
   SearchX,
   SlidersHorizontal,
   Sparkles,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useMemo } from "react";
 import { CategoryRibbon } from "@/components/CategoryRibbon";
 import { CompareTray } from "@/components/CompareTray";
 import { FilterSidebar } from "@/components/FilterSidebar";
@@ -18,7 +20,7 @@ import { ProductCard } from "@/components/ProductCard";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchProducts, fetchStores } from "@/lib/api";
+import { fetchProducts, fetchStores, type ProductsResponse } from "@/lib/api";
 import { cn, getCategoryLabel } from "@/lib/utils";
 import {
   type AppView,
@@ -60,6 +62,11 @@ const AiAssistantDrawer = lazy(() =>
 const AuthModal = lazy(() =>
   import("@/components/AuthModal").then((m) => ({ default: m.AuthModal }))
 );
+const SuggestStoreModal = lazy(() =>
+  import("@/components/SuggestStoreModal").then((m) => ({
+    default: m.SuggestStoreModal,
+  }))
+);
 
 const FOOTER_LINKS: Array<{ view: AppView; label: string }> = [
   { view: "catalogo", label: "Explorar catálogo" },
@@ -79,6 +86,98 @@ const SORT_OPTIONS: Array<{ value: SortOption; label: string }> = [
   { value: "recent", label: "Más recientes" },
 ];
 
+const CURRENT_YEAR = new Date().getFullYear();
+
+const EMPTY_ITEMS: ProductSummaryDTO[] = [];
+
+const DEFAULT_PAGINATION: ProductsResponse["pagination"] = {
+  page: 1,
+  limit: 24,
+  total: 0,
+  totalPages: 1,
+};
+
+const EMPTY_FACETS: ProductsResponse["facets"] = {
+  categories: [],
+  brands: [],
+  stores: [],
+};
+
+const CATALOG_GRID_SKELETON = (
+  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    {Array.from({ length: 9 }, (_, idx) => (
+      <div
+        key={idx}
+        className="space-y-3 rounded-xl border border-[#E7E5DF] bg-white p-4"
+      >
+        <Skeleton className="aspect-[16/10] w-full" />
+        <Skeleton className="h-4 w-1/3" />
+        <Skeleton className="h-5 w-4/5" />
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-9 w-full" />
+      </div>
+    ))}
+  </div>
+);
+
+const DEALS_FALLBACK = (
+  <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
+    <Skeleton className="h-10 w-72" />
+    <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {Array.from({ length: 4 }, (_, idx) => (
+        <Skeleton key={idx} className="h-72 w-full rounded-xl" />
+      ))}
+    </div>
+  </div>
+);
+
+const ACCOUNT_FALLBACK = (
+  <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
+    <Skeleton className="h-10 w-64" />
+    <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {Array.from({ length: 4 }, (_, idx) => (
+        <Skeleton key={idx} className="h-28 w-full rounded-xl" />
+      ))}
+    </div>
+    <Skeleton className="mt-8 h-64 w-full rounded-xl" />
+  </div>
+);
+
+const PRIVACY_FALLBACK = (
+  <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
+    <Skeleton className="h-10 w-80" />
+    <Skeleton className="mt-4 h-36 w-full rounded-2xl" />
+    <div className="mt-6 grid gap-6 lg:grid-cols-[260px_1fr]">
+      <Skeleton className="hidden h-72 rounded-xl lg:block" />
+      <div className="space-y-4">
+        <Skeleton className="h-44 w-full rounded-2xl" />
+        <Skeleton className="h-44 w-full rounded-2xl" />
+      </div>
+    </div>
+  </div>
+);
+
+const GUIDES_FALLBACK = (
+  <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
+    <Skeleton className="h-10 w-80" />
+    <div className="mt-6 space-y-4">
+      <Skeleton className="h-20 w-full rounded-2xl" />
+      <Skeleton className="h-64 w-full rounded-2xl" />
+    </div>
+  </div>
+);
+
+const STORES_FALLBACK = (
+  <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
+    <Skeleton className="h-10 w-80" />
+    <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {Array.from({ length: 6 }, (_, idx) => (
+        <Skeleton key={idx} className="h-44 w-full rounded-xl" />
+      ))}
+    </div>
+  </div>
+);
+
 export function App() {
   const activeView = useFilterStore((s) => s.activeView);
   const q = useFilterStore((s) => s.q);
@@ -96,6 +195,7 @@ export function App() {
   const selectedProductSlug = useFilterStore((s) => s.selectedProductSlug);
   const aiOpen = useFilterStore((s) => s.aiOpen);
   const authOpen = useFilterStore((s) => s.authOpen);
+  const suggestStoreOpen = useFilterStore((s) => s.suggestStoreOpen);
 
   const setSort = useFilterStore((s) => s.setSort);
   const setPage = useFilterStore((s) => s.setPage);
@@ -110,6 +210,7 @@ export function App() {
   const setMobileFiltersOpen = useFilterStore((s) => s.setMobileFiltersOpen);
   const setAiOpen = useFilterStore((s) => s.setAiOpen);
   const setActiveView = useFilterStore((s) => s.setActiveView);
+  const setSuggestStoreOpen = useFilterStore((s) => s.setSuggestStoreOpen);
   const syncFromLocation = useFilterStore((s) => s.syncFromLocation);
   const setAuthOpen = useFilterStore((s) => s.setAuthOpen);
 
@@ -133,19 +234,36 @@ export function App() {
     }
   }, [setAuthOpen]);
 
-  const queryParams = {
-    q: q.trim() || undefined,
-    category,
-    store,
-    brand,
-    minPrice,
-    maxPrice,
-    inStockOnly: inStockOnly || undefined,
-    multiStoreOnly: multiStoreOnly || undefined,
-    sort,
-    page,
-    limit,
-  };
+  const trimmedQ = q.trim();
+
+  const queryParams = useMemo(
+    () => ({
+      q: trimmedQ || undefined,
+      category,
+      store,
+      brand,
+      minPrice,
+      maxPrice,
+      inStockOnly: inStockOnly || undefined,
+      multiStoreOnly: multiStoreOnly || undefined,
+      sort,
+      page,
+      limit,
+    }),
+    [
+      trimmedQ,
+      category,
+      store,
+      brand,
+      minPrice,
+      maxPrice,
+      inStockOnly,
+      multiStoreOnly,
+      sort,
+      page,
+      limit,
+    ]
+  );
 
   const productsQuery = useQuery({
     queryKey: ["products", queryParams],
@@ -161,66 +279,86 @@ export function App() {
   });
 
   const data = productsQuery.data;
-  const items = data?.items ?? [];
-  const pagination = data?.pagination ?? {
-    page: 1,
-    limit: 24,
-    total: 0,
-    totalPages: 1,
-  };
-  const facets = data?.facets ?? {
-    categories: [],
-    brands: [],
-    stores: [],
-  };
+  const items = data?.items ?? EMPTY_ITEMS;
+  const pagination = data?.pagination ?? DEFAULT_PAGINATION;
+  const facets = data?.facets ?? EMPTY_FACETS;
+  const searchMeta = data?.meta.search;
+  const isInitialLoading = productsQuery.isLoading && !data;
 
-  const activeFilterChips: Array<{ label: string; onRemove: () => void }> = [];
-  if (q.trim()) {
-    activeFilterChips.push({
-      label: `Búsqueda: "${q.trim()}"`,
-      onRemove: () => setQuery(""),
-    });
-  }
-  if (category) {
-    activeFilterChips.push({
-      label: getCategoryLabel(category),
-      onRemove: () => setCategory(undefined),
-    });
-  }
-  if (store) {
-    const storeName =
-      facets.stores.find((s) => s.slug === store)?.name ?? store;
-    activeFilterChips.push({
-      label: `Tienda: ${storeName}`,
-      onRemove: () => setStore(undefined),
-    });
-  }
-  if (brand) {
-    activeFilterChips.push({
-      label: `Marca: ${brand}`,
-      onRemove: () => setBrand(undefined),
-    });
-  }
-  if (minPrice !== undefined || maxPrice !== undefined) {
-    activeFilterChips.push({
-      label: `Precio: ${minPrice ? `$${minPrice}` : "$0"} – ${
-        maxPrice ? `$${maxPrice}` : "∞"
-      }`,
-      onRemove: () => setPriceRange(undefined, undefined),
-    });
-  }
-  if (multiStoreOnly) {
-    activeFilterChips.push({
-      label: "2+ tiendas",
-      onRemove: () => setMultiStoreOnly(false),
-    });
-  }
-  if (inStockOnly) {
-    activeFilterChips.push({
-      label: "Solo en stock",
-      onRemove: () => setInStockOnly(false),
-    });
-  }
+  const activeFilterChips = useMemo(() => {
+    const chips: Array<{ label: string; onRemove: () => void }> = [];
+    if (trimmedQ) {
+      chips.push({
+        label: `Búsqueda: "${trimmedQ}"`,
+        onRemove: () => setQuery(""),
+      });
+    }
+    if (category) {
+      chips.push({
+        label: getCategoryLabel(category),
+        onRemove: () => setCategory(undefined),
+      });
+    }
+    if (store) {
+      const storeName =
+        facets.stores.find((s) => s.slug === store)?.name ?? store;
+      chips.push({
+        label: `Tienda: ${storeName}`,
+        onRemove: () => setStore(undefined),
+      });
+    }
+    if (brand) {
+      chips.push({
+        label: `Marca: ${brand}`,
+        onRemove: () => setBrand(undefined),
+      });
+    }
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      chips.push({
+        label: `Precio: ${minPrice ? `$${minPrice}` : "$0"} – ${
+          maxPrice ? `$${maxPrice}` : "∞"
+        }`,
+        onRemove: () => setPriceRange(undefined, undefined),
+      });
+    }
+    if (multiStoreOnly) {
+      chips.push({
+        label: "2+ tiendas",
+        onRemove: () => setMultiStoreOnly(false),
+      });
+    }
+    if (inStockOnly) {
+      chips.push({
+        label: "Solo en stock",
+        onRemove: () => setInStockOnly(false),
+      });
+    }
+    return chips;
+  }, [
+    trimmedQ,
+    category,
+    store,
+    facets.stores,
+    brand,
+    minPrice,
+    maxPrice,
+    multiStoreOnly,
+    inStockOnly,
+    setQuery,
+    setCategory,
+    setStore,
+    setBrand,
+    setPriceRange,
+    setMultiStoreOnly,
+    setInStockOnly,
+  ]);
+
+  const showFuzzyFeedback =
+    trimmedQ.length > 0 && searchMeta?.matchedVia === "fuzzy";
+  const showSynonymFeedback =
+    trimmedQ.length > 0 &&
+    searchMeta?.matchedVia === "synonym" &&
+    searchMeta.expandedTerms.length > 0;
 
   return (
     <div className="flex min-h-screen flex-col bg-[#FAFAF7] text-[#111315]">
@@ -231,9 +369,9 @@ export function App() {
           <>
             <HeroSearch
               totalProducts={pagination.total}
-              monitoredStoresCount={storesMetaQuery.data?.stores.length ?? 8}
+              monitoredStoresCount={storesMetaQuery.data?.stores.length ?? PANAMA_STORES.length}
               lastScrapedAt={data?.meta.lastScrapedAt ?? null}
-              isLoadingStats={productsQuery.isLoading && !data}
+              isLoadingStats={isInitialLoading}
               stores={storesMetaQuery.data?.stores}
               comparableCount={data?.meta.comparableCount ?? null}
             />
@@ -274,7 +412,7 @@ export function App() {
                       </Button>
 
                       <p className="text-sm text-[#525866]">
-                        {productsQuery.isLoading && !data ? (
+                        {isInitialLoading ? (
                           "Consultando precios..."
                         ) : (
                           <>
@@ -344,21 +482,8 @@ export function App() {
                   ) : null}
 
                   {/* Grid states */}
-                  {productsQuery.isLoading && !data ? (
-                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                      {Array.from({ length: 9 }).map((_, idx) => (
-                        <div
-                          key={idx}
-                          className="rounded-xl border border-[#E7E5DF] bg-white p-4 space-y-3"
-                        >
-                          <Skeleton className="aspect-[16/10] w-full" />
-                          <Skeleton className="h-4 w-1/3" />
-                          <Skeleton className="h-5 w-4/5" />
-                          <Skeleton className="h-16 w-full" />
-                          <Skeleton className="h-9 w-full" />
-                        </div>
-                      ))}
-                    </div>
+                  {isInitialLoading ? (
+                    CATALOG_GRID_SKELETON
                   ) : productsQuery.isError ? (
                     <div className="flex flex-col items-center rounded-2xl border border-[#E7E5DF] bg-white px-6 py-14 text-center">
                       <AlertCircle className="h-8 w-8 text-[#E64825]" />
@@ -397,8 +522,8 @@ export function App() {
                           onClick={() =>
                             setAiOpen(
                               true,
-                              q.trim()
-                                ? `Busqué "${q.trim()}" y no encontré coincidencias exactas. ¿Qué alternativas similares hay en Panamá?`
+                              trimmedQ
+                                ? `Busqué "${trimmedQ}" y no encontré coincidencias exactas. ¿Qué alternativas similares hay en Panamá?`
                                 : "Recomiéndame los mejores productos en descuento hoy."
                             )
                           }
@@ -406,10 +531,56 @@ export function App() {
                           <Sparkles className="h-3.5 w-3.5" />
                           Preguntar a Regateo AI
                         </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => setSuggestStoreOpen(true)}
+                        >
+                          Sugerir tienda
+                        </Button>
                       </div>
                     </div>
                   ) : (
                     <>
+                      {/* Smart Search Feedback Banner */}
+                      {showFuzzyFeedback ? (
+                        <div
+                          role="status"
+                          aria-live="polite"
+                          className="mb-3.5 inline-flex max-w-full items-center gap-2 rounded-lg border border-[#FBCFC3] bg-[#FEF2EE]/75 px-3 py-1.5 text-xs text-[#525866]"
+                        >
+                          <Search
+                            className="h-3.5 w-3.5 shrink-0 text-[#E64825]"
+                            strokeWidth={2}
+                          />
+                          <span className="truncate">
+                            Mostrando coincidencias aproximadas para{" "}
+                            <strong className="font-semibold text-[#111315]">
+                              «{trimmedQ}»
+                            </strong>
+                          </span>
+                        </div>
+                      ) : showSynonymFeedback && searchMeta ? (
+                        <div
+                          role="status"
+                          aria-live="polite"
+                          className="mb-3.5 inline-flex max-w-full items-center gap-2 rounded-lg border border-[#E7E5DF] bg-white px-3 py-1.5 text-xs text-[#525866]"
+                        >
+                          <Sparkles
+                            className="h-3.5 w-3.5 shrink-0 text-[#E64825]"
+                            strokeWidth={2}
+                          />
+                          <span className="truncate">
+                            Buscando coincidencias de{" "}
+                            <strong className="font-semibold text-[#111315]">
+                              {searchMeta.expandedTerms.join(", ")}
+                            </strong>{" "}
+                            <span className="text-[#666D7C]">
+                              · resultados principales primero
+                            </span>
+                          </span>
+                        </div>
+                      ) : null}
+
                       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                         {items.map((product) => (
                           <ProductCard key={product.id} product={product} />
@@ -464,81 +635,23 @@ export function App() {
             </div>
           </>
         ) : activeView === "ofertas" ? (
-          <Suspense
-            fallback={
-              <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
-                <Skeleton className="h-10 w-72" />
-                <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {Array.from({ length: 4 }).map((_, idx) => (
-                    <Skeleton key={idx} className="h-72 w-full rounded-xl" />
-                  ))}
-                </div>
-              </div>
-            }
-          >
+          <Suspense fallback={DEALS_FALLBACK}>
             <DealsView />
           </Suspense>
         ) : activeView === "mi-espacio" ? (
-          <Suspense
-            fallback={
-              <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
-                <Skeleton className="h-10 w-64" />
-                <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  {Array.from({ length: 4 }).map((_, idx) => (
-                    <Skeleton key={idx} className="h-28 w-full rounded-xl" />
-                  ))}
-                </div>
-                <Skeleton className="mt-8 h-64 w-full rounded-xl" />
-              </div>
-            }
-          >
+          <Suspense fallback={ACCOUNT_FALLBACK}>
             <AccountSpaceView />
           </Suspense>
         ) : activeView === "privacidad" ? (
-          <Suspense
-            fallback={
-              <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
-                <Skeleton className="h-10 w-80" />
-                <Skeleton className="mt-4 h-36 w-full rounded-2xl" />
-                <div className="mt-6 grid gap-6 lg:grid-cols-[260px_1fr]">
-                  <Skeleton className="hidden h-72 rounded-xl lg:block" />
-                  <div className="space-y-4">
-                    <Skeleton className="h-44 w-full rounded-2xl" />
-                    <Skeleton className="h-44 w-full rounded-2xl" />
-                  </div>
-                </div>
-              </div>
-            }
-          >
+          <Suspense fallback={PRIVACY_FALLBACK}>
             <PrivacyPolicyView />
           </Suspense>
         ) : activeView === "guias" ? (
-          <Suspense
-            fallback={
-              <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
-                <Skeleton className="h-10 w-80" />
-                <div className="mt-6 space-y-4">
-                  <Skeleton className="h-20 w-full rounded-2xl" />
-                  <Skeleton className="h-64 w-full rounded-2xl" />
-                </div>
-              </div>
-            }
-          >
+          <Suspense fallback={GUIDES_FALLBACK}>
             <GuidesView />
           </Suspense>
         ) : (
-          <Suspense
-            fallback={
-              <div className="mx-auto max-w-[1360px] px-4 py-10 sm:px-6 lg:px-8">
-                <Skeleton className="h-10 w-80" />
-                <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {Array.from({ length: 6 }).map((_, idx) => (
-                    <Skeleton key={idx} className="h-44 w-full rounded-xl" />
-                  ))}
-                </div>
-              </div>
-            }
-          >
+          <Suspense fallback={STORES_FALLBACK}>
             <StoresDashboard />
           </Suspense>
         )}
@@ -565,7 +678,7 @@ export function App() {
                 </div>
                 <p className="mt-0.5 text-xs text-[#525866]">
                   Comparador independiente de electrónica en Panamá ·{" "}
-                  {storesMetaQuery.data?.stores.length ?? 8} tiendas verificadas
+                  {storesMetaQuery.data?.stores.length ?? PANAMA_STORES.length} tiendas verificadas
                 </p>
               </div>
             </div>
@@ -592,6 +705,13 @@ export function App() {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => setSuggestStoreOpen(true)}
+                className="text-xs font-semibold text-[#525866] transition-colors hover:text-[#111315] cursor-pointer"
+              >
+                Sugerir tienda
+              </button>
             </nav>
           </div>
 
@@ -601,7 +721,7 @@ export function App() {
               dirigen a las tiendas oficiales para verificar el precio final.
             </p>
             <p className="shrink-0 font-mono text-[11px] text-[#666D7C]">
-              © {new Date().getFullYear()} Regateo · Panamá (USD)
+              © {CURRENT_YEAR} Regateo · Panamá (USD)
             </p>
           </div>
         </div>
@@ -629,6 +749,7 @@ export function App() {
         {selectedProductSlug ? <ProductDetailModal /> : null}
         {aiOpen ? <AiAssistantDrawer /> : null}
         {authOpen ? <AuthModal /> : null}
+        {suggestStoreOpen ? <SuggestStoreModal /> : null}
       </Suspense>
       <CompareTray />
     </div>

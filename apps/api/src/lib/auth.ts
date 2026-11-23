@@ -5,6 +5,7 @@
 // ============================================================================
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import {
   db,
   user,
@@ -120,11 +121,81 @@ export async function authHandler(request: Request): Promise<Response> {
   return auth.handler(request);
 }
 
-/** Sesión opcional (null si no hay cookie válida). */
-export async function getSessionUser(headers: Headers) {
+// ---------------------------------------------------------------------------
+// Neon Auth (Managed Better Auth JWKS) — verificación opcional de Bearer JWT
+// junto con la sesión de cookies de Better Auth.
+// ---------------------------------------------------------------------------
+let cachedJwksUrl: string | null = null;
+let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+
+export function getNeonAuthConfig() {
+  const baseUrl = process.env.NEON_AUTH_BASE_URL?.trim() || null;
+  const jwksUrl =
+    process.env.NEON_AUTH_JWKS_URL?.trim() ||
+    (baseUrl ? `${baseUrl.replace(/\/+$/, "")}/.well-known/jwks.json` : null);
+  return {
+    configured: Boolean(baseUrl && jwksUrl),
+    baseUrl,
+    jwksUrl,
+  };
+}
+
+function getNeonAuthJwks() {
+  const { jwksUrl } = getNeonAuthConfig();
+  if (!jwksUrl) return null;
+  if (!cachedJwks || cachedJwksUrl !== jwksUrl) {
+    cachedJwksUrl = jwksUrl;
+    cachedJwks = createRemoteJWKSet(new URL(jwksUrl));
+  }
+  return cachedJwks;
+}
+
+async function verifyNeonAuthBearer(headers: Headers) {
+  const header = headers.get("authorization");
+  if (!header?.startsWith("Bearer ")) return null;
+  const token = header.slice("Bearer ".length).trim();
+  if (!token) return null;
+
+  const { baseUrl } = getNeonAuthConfig();
+  const jwks = getNeonAuthJwks();
+  if (!baseUrl || !jwks) return null;
+
   try {
-    return await auth.api.getSession({ headers });
+    const origin = new URL(baseUrl).origin;
+    const { payload } = await jwtVerify(token, jwks, {
+      issuer: origin,
+      audience: origin,
+    });
+    if (!payload.sub) return null;
+    const email =
+      typeof payload.email === "string" ? payload.email : `${payload.sub}@neon-auth.local`;
+    const name =
+      typeof payload.name === "string" ? payload.name : email.split("@")[0] || "Usuario";
+    const image = typeof payload.image === "string" ? payload.image : null;
+    return {
+      user: {
+        id: payload.sub,
+        name,
+        email,
+        image,
+      },
+      session: {
+        id: typeof payload.jti === "string" ? payload.jti : `neon-jwt:${payload.sub}`,
+        userId: payload.sub,
+      },
+    };
   } catch {
     return null;
   }
+}
+
+/** Sesión opcional (cookie de Better Auth o Bearer JWT de Neon Auth). */
+export async function getSessionUser(headers: Headers) {
+  try {
+    const cookieSession = await auth.api.getSession({ headers });
+    if (cookieSession?.user) return cookieSession;
+  } catch {
+    // Continuamos al fallback de Neon Auth JWT si existe.
+  }
+  return verifyNeonAuthBearer(headers);
 }

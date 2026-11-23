@@ -1,11 +1,17 @@
 import type { PanamaStoreConfig } from "@regateo/shared";
-import { createDoitCenterAdapter } from "./doitcenter";
-import { createFirecrawlStoreAdapter } from "./firecrawl-store";
-import { createPanafotoAdapter } from "./panafoto";
-import { createPtytecAdapter } from "./ptytec";
-import { createShopifyAdapter } from "./shopify";
-import { createYoytecAdapter } from "./yoytec";
 import type { StoreAdapter } from "../types";
+import { createDoitCenterAdapter } from "./doitcenter";
+import { createEvisionStoreAdapter } from "./evisionstore";
+import { createFirecrawlStoreAdapter } from "./firecrawl-store";
+import { createLgShopAdapter } from "./lgshoppa";
+import { createPanafotoAdapter } from "./panafoto";
+import { createPlayntradeAdapter } from "./pntpanama";
+import { createPtytecAdapter } from "./ptytec";
+import { createRaencoAdapter } from "./raenco";
+import { createSamsungAdapter } from "./samsungpa";
+import { createShopifyAdapter } from "./shopify";
+import { createSonyStoreAdapter } from "./sonypa";
+import { createYoytecAdapter } from "./yoytec";
 
 /**
  * Adapter registry. Adding a new Panamanian store means adding it to
@@ -21,6 +27,12 @@ export function createStoreAdapter(store: PanamaStoreConfig): StoreAdapter {
     doitcenter: () => createDoitCenterAdapter(store),
     yoytec: () => createYoytecAdapter(store),
     ptytec: () => createPtytecAdapter(store),
+    evisionstore: () => createEvisionStoreAdapter(store),
+    raenco: () => createRaencoAdapter(store),
+    pntpanama: () => createPlayntradeAdapter(store),
+    samsungpa: () => createSamsungAdapter(store),
+    lgshoppa: () => createLgShopAdapter(store),
+    sonypa: () => createSonyStoreAdapter(store),
   };
 
   const factory = bySlug[store.slug];
@@ -37,10 +49,16 @@ export function createStoreAdapter(store: PanamaStoreConfig): StoreAdapter {
 }
 
 export {
-  createShopifyAdapter,
-  createPanafotoAdapter,
-  createFirecrawlStoreAdapter,
   createDoitCenterAdapter,
-  createYoytecAdapter,
+  createEvisionStoreAdapter,
+  createFirecrawlStoreAdapter,
+  createLgShopAdapter,
+  createPanafotoAdapter,
+  createPlayntradeAdapter,
   createPtytecAdapter,
+  createRaencoAdapter,
+  createSamsungAdapter,
+  createShopifyAdapter,
+  createSonyStoreAdapter,
+  createYoytecAdapter,
 };

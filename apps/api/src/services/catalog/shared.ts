@@ -12,7 +12,6 @@ import {
   ilike,
   inArray,
   lte,
-  or,
   sql,
   products,
   storeListings,
@@ -25,6 +24,19 @@ import type {
   ProductSummaryDTO,
   StoreListingDTO,
 } from "@regateo/shared";
+import {
+  analyzeSearchQuery,
+  buildRelevanceTierExpr,
+  buildSearchConditions,
+  type SearchMetaDTO,
+  type SearchPlan,
+} from "./search-intent";
+
+export {
+  analyzeSearchQuery,
+  type SearchMetaDTO,
+  type SearchPlan,
+};
 
 // ---------------------------------------------------------------------------
 // Tipos públicos del catálogo
@@ -48,6 +60,8 @@ export interface CatalogSearchResult {
   facets: CatalogFacets;
   /** Productos con 2+ tiendas distintas en stock (comparables reales). */
   comparableCount: number;
+  /** Metadatos del motor de búsqueda cuando se envió `q`. */
+  searchMeta?: SearchMetaDTO;
 }
 
 export interface ScrapeRunDTO {
@@ -250,33 +264,17 @@ export async function statsForProducts(
 // ---------------------------------------------------------------------------
 export function buildConditions(
   query: ProductSearchQuery,
-  stats: StatsColumnSet
+  stats: StatsColumnSet,
+  searchPlan?: SearchPlan | null,
+  options: { fuzzy?: boolean } = {}
 ): SqlCondition[] {
   const conditions: SqlCondition[] = [];
 
   if (query.q) {
-    // Búsqueda multi-token (AND) insensible a acentos y mayúsculas vía
-    // unaccent(): "camara" encuentra "Cámara". También busca en
-    // title_at_store y external_id de listings.
-    const tokens = query.q
-      .toLowerCase()
-      .split(/[\s,]+/)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 2)
-      .slice(0, 4);
-    const effectiveTokens = tokens.length > 0 ? tokens : [query.q];
-    for (const token of effectiveTokens) {
-      const like = `%${token}%`;
-      conditions.push(
-        or(
-          sql`unaccent(lower(${products.canonicalName})) like unaccent(lower(${like}))`,
-          sql`unaccent(lower(${products.brand})) like unaccent(lower(${like}))`,
-          sql`lower(${products.modelNumber}) like lower(${like})`,
-          sql`unaccent(lower(${products.slug})) like unaccent(lower(${like}))`,
-          sql`exists (select 1 from ${storeListings} sl where sl.product_id = ${products.id} and (unaccent(lower(sl.title_at_store)) like unaccent(lower(${like})) or lower(sl.external_id) like lower(${like})))`
-        ) as SqlCondition
-      );
-    }
+    const plan = searchPlan ?? analyzeSearchQuery(query.q);
+    conditions.push(
+      ...(buildSearchConditions(plan, options) as unknown as SqlCondition[])
+    );
   }
   if (query.category) {
     conditions.push(eq(products.category, query.category) as SqlCondition);
@@ -322,39 +320,105 @@ export const MAIN_DEVICE_PATTERN =
 export function buildOrderBy(
   stats: StatsColumnSet,
   sort: ProductSearchQuery["sort"],
-  q?: string
+  q?: string,
+  searchPlan?: SearchPlan | null,
+  options: { fuzzy?: boolean } = {}
 ): SqlCondition[] {
-  // Relevancia: con q presente y sort explícito "relevance" (o el default
-  // "most-stores" sin que el usuario lo cambiara), prioriza similitud
-  // pg_trgm y penaliza "accesorios" con dispositivos principales.
-  const useRelevance = Boolean(q) && (sort === "relevance" || sort === "most-stores");
-  if (useRelevance) {
-    const namesMainDevice = MAIN_DEVICE_PATTERN.test(q as string);
-    return [
-      desc(
-        sql`similarity(unaccent(lower(${products.canonicalName})), unaccent(lower(${q}))) - (case when ${products.category} = 'accesorios' and ${namesMainDevice} then 0.5 else 0 end)`
-      ) as SqlCondition,
-      desc(stats.savingsCents) as SqlCondition,
-      desc(stats.storeCount) as SqlCondition,
-    ];
+  // Sin búsqueda textual: comportamiento 100% original.
+  if (!q) {
+    switch (sort) {
+      case "price-asc":
+        return [asc(stats.bestPriceCents) as SqlCondition];
+      case "price-desc":
+        return [desc(stats.bestPriceCents) as SqlCondition];
+      case "recent":
+        return [desc(products.updatedAt) as SqlCondition];
+      case "best-savings":
+        return [
+          desc(stats.savingsCents) as SqlCondition,
+          desc(stats.storeCount) as SqlCondition,
+        ];
+      case "most-stores":
+      default:
+        return [
+          desc(stats.storeCount) as SqlCondition,
+          desc(stats.savingsCents) as SqlCondition,
+        ];
+    }
   }
-  switch (sort) {
-    case "price-asc":
-      return [asc(stats.bestPriceCents) as SqlCondition];
-    case "price-desc":
-      return [desc(stats.bestPriceCents) as SqlCondition];
-    case "recent":
-      return [desc(products.updatedAt) as SqlCondition];
-    case "best-savings":
+
+  const plan = searchPlan ?? analyzeSearchQuery(q);
+  const tierExpr = buildRelevanceTierExpr(stats.bestPriceCents, plan);
+  const tierOrder: SqlCondition[] = tierExpr ? [asc(tierExpr) as SqlCondition] : [];
+  const simTarget = plan.similarityQuery || q;
+  const simScore = options.fuzzy
+    ? sql`greatest(word_similarity(unaccent(lower(${simTarget})), unaccent(lower(${products.canonicalName}))), similarity(unaccent(lower(${products.canonicalName})), unaccent(lower(${simTarget}))))`
+    : sql`similarity(unaccent(lower(${products.canonicalName})), unaccent(lower(${simTarget})))`;
+
+  // Para consolas principales (PS5, PS4, Xbox, Switch): flagship / bundles primero
+  const preferHigherTier = Boolean(
+    plan.primaryDevice?.preferHigherTierInRelevance && !plan.userWantsAccessory
+  );
+  const consoleMinPrice = plan.primaryDevice?.minPriceCents ?? 0;
+  const consoleHeadBoost = sql`(case when ${stats.bestPriceCents} >= ${consoleMinPrice} and unaccent(lower(${products.canonicalName})) ~* '(consola|bundle)' then 1 else 0 end)`;
+
+  if (sort === "relevance") {
+    if (preferHigherTier) {
       return [
+        ...tierOrder,
+        desc(consoleHeadBoost) as SqlCondition,
+        desc(stats.bestPriceCents) as SqlCondition,
+        desc(simScore) as SqlCondition,
         desc(stats.savingsCents) as SqlCondition,
         desc(stats.storeCount) as SqlCondition,
       ];
+    }
+    return [
+      ...tierOrder,
+      desc(simScore) as SqlCondition,
+      desc(stats.savingsCents) as SqlCondition,
+      desc(stats.storeCount) as SqlCondition,
+      desc(stats.bestPriceCents) as SqlCondition,
+    ];
+  }
+
+  switch (sort) {
+    case "price-asc":
+      return [
+        ...tierOrder,
+        asc(
+          sql`(case when coalesce(${stats.bestPriceCents}, 0) > 0 then 0 else 1 end)`
+        ) as SqlCondition,
+        asc(stats.bestPriceCents) as SqlCondition,
+      ];
+    case "price-desc":
+      return [...tierOrder, desc(stats.bestPriceCents) as SqlCondition];
+    case "recent":
+      return [...tierOrder, desc(products.updatedAt) as SqlCondition];
+    case "best-savings":
+      return [
+        ...tierOrder,
+        desc(stats.savingsCents) as SqlCondition,
+        desc(stats.storeCount) as SqlCondition,
+        desc(stats.bestPriceCents) as SqlCondition,
+      ];
     case "most-stores":
     default:
+      if (preferHigherTier) {
+        return [
+          ...tierOrder,
+          desc(stats.storeCount) as SqlCondition,
+          desc(stats.savingsCents) as SqlCondition,
+          desc(consoleHeadBoost) as SqlCondition,
+          desc(stats.bestPriceCents) as SqlCondition,
+        ];
+      }
       return [
+        ...tierOrder,
         desc(stats.storeCount) as SqlCondition,
         desc(stats.savingsCents) as SqlCondition,
+        desc(simScore) as SqlCondition,
+        desc(stats.bestPriceCents) as SqlCondition,
       ];
   }
 }

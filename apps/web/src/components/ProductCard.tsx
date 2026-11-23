@@ -7,7 +7,7 @@ import {
   Layers,
   Scale,
 } from "lucide-react";
-import { useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useUserSpace } from "@/hooks/useUserSpace";
 import { buildOutboundUrl } from "@/lib/api";
 import {
@@ -27,31 +27,52 @@ interface ProductCardProps {
   featured?: boolean;
 }
 
-export function ProductCard({ product, featured = false }: ProductCardProps) {
+export const ProductCard = memo(function ProductCard({
+  product,
+  featured = false,
+}: ProductCardProps) {
   const openProduct = useFilterStore((s) => s.openProduct);
   const setAuthOpen = useFilterStore((s) => s.setAuthOpen);
-  const compareItems = useFilterStore((s) => s.compareItems);
+  const isComparing = useFilterStore((s) =>
+    s.compareItems.some((item) => item.id === product.id)
+  );
   const toggleCompareItem = useFilterStore((s) => s.toggleCompareItem);
   const { isFavorited, toggleFavorite } = useUserSpace();
 
   const [imgFailed, setImgFailed] = useState(false);
   const [showGuestNudge, setShowGuestNudge] = useState(false);
+  const nudgeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (nudgeTimerRef.current !== null) {
+        window.clearTimeout(nudgeTimerRef.current);
+      }
+    };
+  }, []);
 
   const isFavorite = isFavorited(product.id, product.slug);
-  const isComparing = compareItems.some((item) => item.id === product.id);
 
   const handleToggleFavorite = () => {
+    if (nudgeTimerRef.current !== null) {
+      window.clearTimeout(nudgeTimerRef.current);
+      nudgeTimerRef.current = null;
+    }
     const result = toggleFavorite(product.id, product);
     if (!result.isAuthenticated && result.added) {
       setShowGuestNudge(true);
-      window.setTimeout(() => setShowGuestNudge(false), 3800);
+      nudgeTimerRef.current = window.setTimeout(() => {
+        nudgeTimerRef.current = null;
+        setShowGuestNudge(false);
+      }, 3800);
     } else {
       setShowGuestNudge(false);
     }
   };
 
-  const sortedListings = [...product.listings].sort(
-    (a, b) => a.priceCents - b.priceCents
+  const sortedListings = useMemo(
+    () => [...product.listings].sort((a, b) => a.priceCents - b.priceCents),
+    [product.listings]
   );
   const topListings = sortedListings.slice(0, 3);
   const bestListing = sortedListings[0] ?? null;
@@ -76,7 +97,7 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
   return (
     <article
       className={cn(
-        "group relative flex h-full flex-col overflow-hidden rounded-xl border bg-white card-elevation transition-[border-color,box-shadow] duration-150 hover:card-elevation-hover",
+        "product-card-cv group relative flex h-full flex-col overflow-hidden rounded-xl border bg-white card-elevation transition-[border-color,box-shadow] duration-150 hover:card-elevation-hover",
         featured
           ? "border-[#E64825]/35 hover:border-[#E64825]/55"
           : "border-[#E7E5DF] hover:border-[#D5D2C9]"
@@ -402,4 +423,4 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
       </div>
     </article>
   );
-}
+});

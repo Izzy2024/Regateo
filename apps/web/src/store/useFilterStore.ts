@@ -190,6 +190,7 @@ interface FilterState {
   authHint: string | null;
   compareModalOpen: boolean;
   mobileFiltersOpen: boolean;
+  suggestStoreOpen: boolean;
 
   q: string;
   category: ProductCategory | undefined;
@@ -223,7 +224,7 @@ interface FilterState {
   ) => void;
   setCompareModalOpen: (open: boolean) => void;
   setMobileFiltersOpen: (open: boolean) => void;
-
+  setSuggestStoreOpen: (open: boolean) => void;
   setQuery: (q: string) => void;
   setCategory: (category: ProductCategory | undefined) => void;
   setStore: (store: string | undefined) => void;
@@ -265,6 +266,7 @@ export const useFilterStore = create<FilterState>((set, get) => {
   authHint: null,
   compareModalOpen: false,
   mobileFiltersOpen: false,
+  suggestStoreOpen: false,
 
   ...readInitialFilters(),
   page: 1,
@@ -314,6 +316,7 @@ export const useFilterStore = create<FilterState>((set, get) => {
 
   setCompareModalOpen: (open) => set({ compareModalOpen: open }),
   setMobileFiltersOpen: (open) => set({ mobileFiltersOpen: open }),
+  setSuggestStoreOpen: (open) => set({ suggestStoreOpen: open }),
 
   setQuery: (q) => {
     const trimmed = q.trim();

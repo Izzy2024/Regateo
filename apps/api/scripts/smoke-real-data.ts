@@ -3,6 +3,15 @@
 // No siembra ni borra nada. Ejecutar: bun scripts/smoke-real-data.ts
 // ============================================================================
 import { app } from "../src/app";
+import { PANAMA_STORES } from "@regateo/shared";
+
+/** Slugs reales de las 13 tiendas monitoreadas, derivados de PANAMA_STORES. */
+const REAL_STORE_SLUGS_RE = new RegExp(
+  PANAMA_STORES.filter((store) => store.enabled)
+    .map((store) => store.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|"),
+  "i"
+);
 
 let failures = 0;
 function check(name: string, condition: boolean, detail?: unknown): void {
@@ -102,7 +111,11 @@ const events = sseText
 const types = events.map((e: any) => e.type);
 check("AI SSE tool-call→tool-result→text-delta→done", types.includes("tool-call") && types.includes("tool-result") && types.includes("text-delta") && types.at(-1) === "done", types);
 const toolResult = JSON.stringify(events.find((e: any) => e.type === "tool-result") ?? {});
-check("AI tool-result con tiendas reales", /multimax|panafoto|rodelag|titan|photura|doitcenter|yoytec|ptytec/i.test(toolResult), toolResult.slice(0, 200));
+check(
+  "AI tool-result con tiendas reales",
+  REAL_STORE_SLUGS_RE.test(toolResult),
+  toolResult.slice(0, 200)
+);
 const deltas = events.filter((e: any) => e.type === "text-delta").map((e: any) => e.delta).join("");
 check("AI respuesta con precio USD real", /(USD\s?\d|\$\d)/.test(deltas), deltas.slice(0, 300));
 

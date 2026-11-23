@@ -8,11 +8,13 @@ import {
   desc,
   eq,
   gte,
+  inArray,
   sql,
   outboundClicks,
   priceReports,
   products,
   searchEvents,
+  storeRequests,
   stores,
 } from "@regateo/db";
 import type { AnalyticsSummaryDTO } from "@regateo/shared";
@@ -29,6 +31,8 @@ export async function getAnalyticsSummary(
     topSearchRows,
     zeroResultRows,
     openReportsRows,
+    openStoreRequestsRows,
+    topStoreRequestsRows,
     productRows,
   ] = await Promise.all([
     db
@@ -90,6 +94,24 @@ export async function getAnalyticsSummary(
       .from(priceReports)
       .where(and(eq(priceReports.status, "open"), gte(priceReports.createdAt, since))),
 
+    // Sugerencias de tiendas pendientes de evaluar (todo el histórico: una
+    // sugerencia abierta no "caduca" con el período consultado).
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(storeRequests)
+      .where(inArray(storeRequests.status, ["pending", "reviewing"])),
+
+    db
+      .select({
+        storeName: storeRequests.storeName,
+        websiteUrl: storeRequests.websiteUrl,
+        votes: storeRequests.votes,
+        status: storeRequests.status,
+      })
+      .from(storeRequests)
+      .orderBy(desc(storeRequests.votes))
+      .limit(10),
+
     db
       .select({
         total: sql<number>`count(*)::int`,
@@ -126,6 +148,13 @@ export async function getAnalyticsSummary(
       count: row.count,
     })),
     openPriceReportsCount: openReportsRows[0]?.total ?? 0,
+    openStoreRequestsCount: openStoreRequestsRows[0]?.total ?? 0,
+    topStoreRequests: topStoreRequestsRows.map((row) => ({
+      storeName: row.storeName,
+      websiteUrl: row.websiteUrl,
+      votes: row.votes,
+      status: row.status,
+    })),
     totalProducts,
     multiStoreProducts,
     multiStoreCoveragePct:

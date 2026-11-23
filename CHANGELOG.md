@@ -2,6 +2,49 @@
 
 Todos los cambios relevantes del proyecto se documentan aquí siguiendo [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.6.0] - 2026-11-23
+
+### Infraestructura Backend en Neon (Postgres, Auth, AI Gateway y Realtime)
+- **Neon CLI y configuración declarativa (`neon.ts`):** proyecto enlazado a la rama `production` (`crimson-credit-44656293`) con los 4 servicios habilitados (`postgres`, `auth`, `ai-gateway`, `realtime` con `allowedOrigins` para desarrollo local).
+- **Neon Postgres (`packages/db/drizzle.config.ts`):** migraciones Drizzle configuradas sobre `DATABASE_URL_UNPOOLED` (conexión directa) y runtime en pooling (`DATABASE_URL` con `prepare: false` y `ssl: "require"`). Esquema de 14 tablas y extensiones `pg_trgm` / `unaccent` + índices GIN aplicados en Neon.
+- **Neon Auth (`apps/api/src/lib/auth.ts`):** Better Auth preservado funcionando sobre Neon Postgres + soporte de verificación de Bearer JWT contra `NEON_AUTH_JWKS_URL` vía `jose`, expuesto en `GET /api/auth/providers` y `GET /api/health`.
+- **Neon AI Gateway (`apps/api/src/routes/ai.ts`):** integración con `NEON_AI_GATEWAY_BASE_URL` y `NEON_AI_GATEWAY_TOKEN` mediante `@ai-sdk/openai`, con fallback automático a DeepSeek/OpenRouter/determinista si no hay créditos activos en el Gateway, y endpoint de estado `GET /api/ai/status`.
+- **Neon Realtime (`apps/api/src/lib/realtime.ts`, `apps/web/src/hooks/useRealtimeStoreRequests.ts`, `SuggestStoreModal.tsx`):** consultas SQL en vivo selladas en el servidor (`GET /api/realtime/store-requests`, solo columnas públicas sin PII), `txid` en `POST /api/store-requests` y suscripción WebSocket en vivo con renovación automática y badge *«En vivo»* en el modal de sugerencias de tiendas.
+
+## [0.5.5] - 2026-11-22
+
+### 14ª Tienda Activa: Sony Store PA (`store.sony.com.pa`)
+- **Nuevo adaptador VTEX oficial (`packages/scraper/src/adapters/sonypa.ts` + generalización `createVtexStoreAdapter` en `lgshoppa.ts`):** indexa el catálogo oficial de Sony Panamá (TVs BRAVIA, PlayStation 5, audífonos WH/WF, cámaras Alpha y audio) con normalización de códigos de modelo (ej. `K-65S20M2`, `WF-C710N`, `MDR-3R`) y URLs canónicas verificadas HTTP 200 (`/<slug>/p`).
+- **Soporte transversal (14 tiendas):** agregada `sonypa` a `PANAMA_STORES` (`@regateo/shared`), alias de detección `alreadyMonitored` en `POST /api/store-requests` (`Sony`, `Sony Store`, `Sony Panamá`, `store.sony.com.pa`) y texto dinámico en `StoresDashboard.tsx`, `HeroSearch.tsx`, `App.tsx` y **Regateo AI**.
+
+## [0.5.4] - 2026-11-22
+
+### 4 Nuevas Tiendas Activas en Panamá (13 Tiendas Monitoreadas · +16,700 Listings)
+- **4 nuevos adaptadores rápidos 100% JSON (`packages/scraper/src/adapters/`):**
+  - **Raenco (`raenco.ts`):** Magento 2 GraphQL enfocado en los 6 departamentos de electrónica/línea blanca (`1,644` listings reales indexados).
+  - **PlayNTrade (`pntpanama.ts`):** REST API oficial gaming `/api/v6.2.7/products` con selector inteligente de precios completos (evitando abonos de reserva) y URLs canónicas `/products/:sku/:slug` (`322` listings reales de consolas, controles y juegos).
+  - **Samsung Shop PA (`samsungpa.ts`):** Magento 2 GraphQL oficial (`Store: pa`) con normalización de sufijos `-PA` para emparejamiento multi-tienda (`300` listings oficiales Samsung Panamá).
+  - **LG Shop PA (`lgshoppa.ts`):** VTEX Catalog Search REST con EAN/GTIN oficial de 13 dígitos (`246` listings oficiales LG Panamá).
+- **Tests y cobertura:** nueva suite `packages/scraper/src/sprint7-stores.test.ts` (**195/195 tests PASS** en `@regateo/scraper`).
+- **Backend y Frontend dinámicos para 13 tiendas:** `PANAMA_STORES` (`@regateo/shared`), Regateo AI (`apps/api/src/routes/ai.ts`), detección de alias `alreadyMonitored` en `POST /api/store-requests` (`Raenco`, `Play N Trade`, `PNT`, `Samsung Shop`, `LG Shop`), y marquee/contadores dinámicos en `HeroSearch.tsx`, `StoresDashboard.tsx` y `App.tsx`.
+
+## [0.5.3] - 2026-11-22
+
+### 9ª Tienda Activa (eVision Store) y Sugerencias de Tiendas por la Comunidad
+- **Nueva tienda monitoreada — eVision Store (`evisionstore.com`):** agregada a `PANAMA_STORES` (`@regateo/shared`), nuevo adaptador `packages/scraper/src/adapters/evisionstore.ts` (motor principal sobre índice público Algolia con pacer anti-rate-limit + URLs canónicas verificadas `/products/<slug>` + fallback HTML Botble con Cheerio) y suite de tests `evisionstore.test.ts`. Primer barrido completado con **852 listings reales indexados** y **153 emparejamientos multi-tienda** con las otras 8 tiendas de Panamá.
+- **Sistema híbrido de sugerencias de tiendas (`store_requests`):**
+  - Nueva tabla `store_requests` en PostgreSQL (`packages/db/src/schema.ts`) con deduplicación por clave normalizada y contador de votos comunitarios (`votes`).
+  - Nuevos endpoints `POST /api/store-requests` (detección de tiendas ya monitoreadas, suma automática de votos `+1`, rate-limit, honeypot anti-bot y notificación opcional vía Resend si `SUPPORT_EMAIL` está configurado) y `GET /api/store-requests/popular` (público cacheado, sin exponer correos personales conforme a Ley 81), más métricas `openStoreRequestsCount` y `topStoreRequests` en `GET /api/admin/analytics`.
+  - Nuevo modal lazy `SuggestStoreModal.tsx` en `apps/web` con sección en vivo *«Más pedidas por la comunidad»* (voto `+1` en 1 clic), formulario rápido de 10 segundos y enlace secundario directo a `soporte@regateo.pa`, accesible desde el Hero, *Tiendas y Radar*, estado vacío de búsqueda y Footer.
+
+## [0.5.2] - 2026-11-22
+
+### Búsqueda Inteligente por Coincidencia y Relevancia (Producto Principal Primero)
+- **Motor de intención, sinónimos de Panamá y tolerancia a typos (`apps/api/src/services/catalog/search-intent.ts`):** expansión automática de sinónimos/abreviaturas (`televisión`/`tele` → `televisor`/`Smart TV`, `ps5`/`pc5`/`play 5` → `PlayStation 5`/`PlayStation®5` con borde de palabra `\m...\M` para evitar falsos positivos como `MY-PS555`, `nevera`/`refri` → `refrigeradora`, `parlante` → `bocina`, `ventilador` ↔ `abanico`, `air fryer` → `freidora de aire`, etc.), corrección de errores de escritura frecuentes (`sansung`, `labadora`, `televizor`, `aifon`) y fallback fuzzy automático con `pg_trgm` (`word_similarity`).
+- **Clasificación por niveles Producto Principal vs Accesorio/Repuesto en TODOS los ordenamientos (`shared.ts`, `search.ts`, `ai-tools.ts`):** al buscar consolas (`PS5`), equipos (`aire acondicionado`, `televisor`, `laptop`, `lavadora`, `nevera`) u otros dispositivos principales, los productos principales siempre aparecen primero —incluso en **Mayor ahorro (`best-savings`)** y **Menor precio (`price-asc`)**—, bajando accesorios, repuestos, garantías y artículos *"para X"* / *"compatible con X"* (soportes, filtros, controles, auriculares, mangueras). Si el usuario pide explícitamente un accesorio (`audífonos ps5`, `control ps5`, `soporte aire acondicionado`), el accesorio lidera los resultados.
+- **UX de búsqueda y optimizaciones React (`apps/web` — Vercel React Best Practices):** feedback discreto de coincidencias expandidas/aproximadas (`meta.search`), debounce sin condiciones de carrera + `startTransition`, hoisting de fallbacks estáticos, `content-visibility: auto` en tarjetas y suscripción derivada en `ProductCard`.
+- **Verificación automatizada (`apps/api/scripts/verify-search-quality.ts`):** suite de calidad de búsqueda de solo lectura contra datos reales de Panamá.
+
 ## [0.5.1] - 2026-11-21
 
 ### Identidad visual "Regateo" y Mascota Interactiva en el Hero

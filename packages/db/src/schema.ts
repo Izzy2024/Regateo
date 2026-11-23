@@ -373,3 +373,26 @@ export const searchEvents = pgTable(
     index("search_events_query_idx").on(table.query),
   ]
 );
+
+export const storeRequests = pgTable(
+  "store_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    storeName: varchar("store_name", { length: 80 }).notNull(),
+    normalizedKey: varchar("normalized_key", { length: 96 }).notNull(),
+    websiteUrl: varchar("website_url", { length: 240 }),
+    categoryHint: varchar("category_hint", { length: 80 }),
+    details: varchar("details", { length: 300 }),
+    contactEmail: varchar("contact_email", { length: 255 }),
+    votes: integer("votes").notNull().default(1),
+    status: varchar("status", { length: 24 }).notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("store_requests_normalized_key_uidx").on(table.normalizedKey),
+    index("store_requests_votes_idx").on(table.votes),
+    index("store_requests_status_idx").on(table.status),
+    index("store_requests_created_at_idx").on(table.createdAt),
+  ]
+);

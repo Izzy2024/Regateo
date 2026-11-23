@@ -3,13 +3,14 @@ import {
   ArrowRight,
   Clock,
   Layers,
+  MessageSquarePlus,
   Search,
   Sparkles,
   Store,
   Tag,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn, formatRelativeEs } from "@/lib/utils";
 import { useFilterStore } from "@/store/useFilterStore";
 import { BlurFade } from "./magicui/blur-fade";
@@ -17,25 +18,33 @@ import { Marquee } from "./magicui/marquee";
 import { NumberTicker } from "./magicui/number-ticker";
 import { HeroMascotStage } from "./HeroMascotStage";
 
+const SEARCH_DEBOUNCE_MS = 240;
+
 const QUICK_SEARCHES = [
+  "PS5",
+  "Televisor",
+  "Aire acondicionado",
   "Lavadora",
   "Laptop",
-  "Mouse",
-  "Smart TV",
-  "Aire acondicionado",
   "Audífonos",
-];
-
-const ACTIVE_STORE_SLUGS = [
-  "multimax",
-  "panafoto",
-  "rodelag",
-  "titan",
-  "photura",
-  "doitcenter",
-  "yoytec",
-  "ptytec",
 ] as const;
+
+const ACTIVE_STORE_SLUGS = PANAMA_STORES.filter((s) => s.enabled).map(
+  (s) => s.slug
+);
+
+const EDITABLE_TAGS = new Set(["INPUT", "TEXTAREA"]);
+
+const PANAMA_STORE_BY_SLUG = new Map(
+  PANAMA_STORES.map((item) => [item.slug, item])
+);
+
+const STAT_DIVIDER = (
+  <span
+    aria-hidden="true"
+    className="hidden h-3.5 w-px bg-[#E7E5DF] sm:inline-block"
+  />
+);
 
 interface HeroSearchProps {
   totalProducts: number;
@@ -60,31 +69,42 @@ export function HeroSearch({
   const setStore = useFilterStore((s) => s.setStore);
   const setAiOpen = useFilterStore((s) => s.setAiOpen);
   const setActiveView = useFilterStore((s) => s.setActiveView);
+  const setSuggestStoreOpen = useFilterStore((s) => s.setSuggestStoreOpen);
 
   const [draft, setDraft] = useState(q);
+  const [syncedQ, setSyncedQ] = useState(q);
+  const [externalSyncGen, setExternalSyncGen] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<number | null>(null);
 
-  useEffect(() => {
+  // Sync draft when q changes externally (e.g. filter chip removal, reset, or history navigation)
+  if (q !== syncedQ) {
+    setSyncedQ(q);
     setDraft(q);
-  }, [q]);
+    setExternalSyncGen((gen) => gen + 1);
+  }
+
+  const cancelPendingDebounce = useCallback(() => {
+    if (debounceRef.current !== null) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      if (draft !== q) {
-        setQuery(draft);
-      }
-    }, 240);
-    return () => window.clearTimeout(timer);
-  }, [draft, q, setQuery]);
+    if (externalSyncGen > 0) {
+      cancelPendingDebounce();
+    }
+  }, [externalSyncGen, cancelPendingDebounce]);
+
+  useEffect(() => cancelPendingDebounce, [cancelPendingDebounce]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const isEditable =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
+        target !== null &&
+        (EDITABLE_TAGS.has(target.tagName) || target.isContentEditable);
       if (event.key === "/" && !isEditable) {
         event.preventDefault();
         inputRef.current?.focus();
@@ -98,7 +118,7 @@ export function HeroSearch({
     const apiBySlug = new Map((stores ?? []).map((item) => [item.slug, item]));
     return ACTIVE_STORE_SLUGS.map((slug) => {
       const apiStore = apiBySlug.get(slug);
-      const configStore = PANAMA_STORES.find((item) => item.slug === slug);
+      const configStore = PANAMA_STORE_BY_SLUG.get(slug);
       return {
         slug,
         name: apiStore?.name ?? configStore?.name ?? slug,
@@ -108,18 +128,47 @@ export function HeroSearch({
     });
   }, [stores]);
 
+  const commitQuery = (nextValue: string) => {
+    cancelPendingDebounce();
+    startTransition(() => {
+      setSyncedQ(nextValue);
+      if (nextValue !== q) {
+        setQuery(nextValue);
+      }
+    });
+  };
+
+  const handleDraftChange = (nextValue: string) => {
+    setDraft(nextValue);
+    cancelPendingDebounce();
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
+      startTransition(() => {
+        setSyncedQ(nextValue);
+        setQuery(nextValue);
+      });
+    }, SEARCH_DEBOUNCE_MS);
+  };
+
   const handleQuickSearch = (term: string) => {
     setDraft(term);
-    setQuery(term);
+    commitQuery(term);
+  };
+
+  const handleClear = () => {
+    setDraft("");
+    commitQuery("");
+    inputRef.current?.focus();
   };
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    setQuery(draft);
+    commitQuery(draft);
   };
 
   const displayedStoresCount =
     monitoredStoresCount > 0 ? monitoredStoresCount : ACTIVE_STORE_SLUGS.length;
+  const normalizedQ = q.trim().toLowerCase();
 
   return (
     <section className="border-b border-[#E7E5DF] bg-white">
@@ -131,8 +180,10 @@ export function HeroSearch({
                 Encuentra el mejor precio en tecnología en Panamá sin abrir 10 pestañas.
               </h1>
               <p className="mt-2.5 max-w-[64ch] text-[15px] leading-relaxed text-[#525866]">
-                Precios reales verificados en Multimax, Panafoto, Rodelag, Almacenes Titán,
-                Photura, Do it Center, Yoytec y PTYTEC con enlaces directos a cada tienda.
+                Precios reales verificados en {displayedStoresCount} tiendas
+                panameñas — Multimax, Panafoto, Rodelag, Almacenes Titán, Photura,
+                Do it Center, Yoytec, PTYTEC, eVision Store, Raenco, PlayNTrade,
+                Samsung Shop PA y LG Shop PA — con enlaces directos a cada tienda.
               </p>
             </BlurFade>
 
@@ -147,19 +198,15 @@ export function HeroSearch({
                     ref={inputRef}
                     type="search"
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder="Busca por producto, marca o modelo (ej. Samsung QLED, HP 15, Logitech MX)..."
+                    onChange={(e) => handleDraftChange(e.target.value)}
+                    placeholder="Busca por producto, marca o modelo (ej. PS5, Televisión Samsung, Aire acondicionado)..."
                     aria-label="Buscar productos de tecnología en Panamá"
                     className="h-10 w-full bg-transparent px-3 text-[15px] text-[#111315] placeholder:text-[#666D7C] focus:outline-none"
                   />
                   {draft ? (
                     <button
                       type="button"
-                      onClick={() => {
-                        setDraft("");
-                        setQuery("");
-                        inputRef.current?.focus();
-                      }}
+                      onClick={handleClear}
                       aria-label="Limpiar búsqueda"
                       className="mr-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[#666D7C] hover:bg-[#EFECE5] hover:text-[#111315] cursor-pointer"
                     >
@@ -185,7 +232,7 @@ export function HeroSearch({
                   Búsquedas rápidas:
                 </span>
                 {QUICK_SEARCHES.map((term) => {
-                  const active = q.toLowerCase() === term.toLowerCase();
+                  const active = normalizedQ === term.toLowerCase();
                   return (
                     <button
                       key={term}
@@ -246,7 +293,7 @@ export function HeroSearch({
                 </span>
               </button>
 
-              <span className="hidden h-3.5 w-px bg-[#E7E5DF] sm:inline-block" />
+              {STAT_DIVIDER}
 
               <div className="inline-flex items-center gap-1.5">
                 <Tag className="h-3.5 w-3.5 text-[#E64825]" strokeWidth={2} />
@@ -262,7 +309,7 @@ export function HeroSearch({
 
               {typeof comparableCount === "number" && comparableCount > 0 ? (
                 <>
-                  <span className="hidden h-3.5 w-px bg-[#E7E5DF] sm:inline-block" />
+                  {STAT_DIVIDER}
 
                   <div className="inline-flex items-center gap-1.5">
                     <Layers className="h-3.5 w-3.5 text-[#059669]" strokeWidth={2} />
@@ -276,7 +323,7 @@ export function HeroSearch({
                 </>
               ) : null}
 
-              <span className="hidden h-3.5 w-px bg-[#E7E5DF] sm:inline-block" />
+              {STAT_DIVIDER}
 
               <div className="inline-flex items-center gap-1.5">
                 <Clock className="h-3.5 w-3.5 text-[#666D7C]" strokeWidth={2} />
@@ -289,11 +336,21 @@ export function HeroSearch({
                   </strong>
                 </span>
               </div>
+              {STAT_DIVIDER}
+
+              <button
+                type="button"
+                onClick={() => setSuggestStoreOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#E7E5DF] bg-[#FAFAF7] px-3 py-1 font-medium text-[#525866] transition-colors hover:border-[#D5D2C9] hover:bg-[#F4F3EE] hover:text-[#111315] cursor-pointer"
+              >
+                <MessageSquarePlus className="h-3.5 w-3.5 text-[#059669]" strokeWidth={2} />
+                <span>Sugerir tienda</span>
+              </button>
             </div>
           </div>
 
           <div className="mt-3.5">
-            <Marquee pauseOnHover durationSeconds={42} gap="0.625rem" repeat={3}>
+            <Marquee pauseOnHover durationSeconds={54} gap="0.625rem" repeat={3}>
               {marqueeStores.map((store) => {
                 const isSelected = selectedStore === store.slug;
                 return (

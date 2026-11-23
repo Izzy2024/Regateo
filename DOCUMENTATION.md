@@ -1,6 +1,6 @@
 # Documentación Técnica Completa — RegateoApp
 
-**RegateoApp** es un comparador de precios de electrónica, cómputo, telefonía, audio y línea blanca en la República de Panamá. Rastrea, normaliza, empareja por modelo exacto y compara alternativas similares entre **8 tiendas panameñas activas** con enlaces directos verificados a cada comercio, historial de precios, asistente **Regateo AI** en streaming con DeepSeek/OpenRouter, espacio personalizado para usuarios logueados (**Mi Espacio**), protección anti-bot (**CAPTCHA**) y cumplimiento con la **Ley 81 de 2019 de Protección de Datos Personales de Panamá**.
+**Regateo** es un comparador de precios de electrónica, cómputo, telefonía, audio y línea blanca en la República de Panamá. Rastrea, normaliza, empareja por modelo exacto y compara alternativas similares entre **14 tiendas panameñas activas** con enlaces directos verificados a cada comercio, historial de precios, asistente **Regateo AI** en streaming con DeepSeek/OpenRouter, espacio personalizado para usuarios logueados (**Mi Espacio**), protección anti-bot (**CAPTCHA**) y cumplimiento con la **Ley 81 de 2019 de Protección de Datos Personales de Panamá**.
 
 ---
 
@@ -222,6 +222,8 @@ PostgreSQL con **13 tablas** indexadas desde el día uno en todas las claves for
 | `POST /api/me/favorites/sync` | **Sesión Better Auth (`401`)** | Migración automática de favoritos locales de invitado tras login |
 | `POST/DELETE /api/me/lists` y `/items` | **Sesión Better Auth (`401`)** | CRUD de listas de presupuesto y cálculo de ahorro óptimo |
 | `PATCH/DELETE /api/me/alerts/:id` | **Sesión Better Auth (`401`)** | Editar precio objetivo, pausar/activar o eliminar alertas propias |
+| `POST /api/store-requests` | Rate Limit `8/min` + Honeypot | Sugerir nueva tienda panameña (deduplicación automática + votos `+1` + aviso opcional vía Resend) |
+| `GET /api/store-requests/popular` | Pública (Cacheada) | Top 8 tiendas más pedidas por la comunidad (sin exponer correos personales) |
 | `POST /api/cron/scrape` | **`CRON_SECRET` obligatorio (`401`)** | Disparo interno de scraping para Cron Jobs / GitHub Actions |
 | `POST /api/cron/invalidate-cache` | **`CRON_SECRET` obligatorio (`401`)** | Limpieza interna de caché post-scraping CLI |
 
@@ -229,7 +231,7 @@ PostgreSQL con **13 tablas** indexadas desde el día uno en todas las claves for
 
 ## 5. Tiendas Monitoreadas, Matching y Operación Interna
 
-### Tiendas Activas en Panamá (8)
+### Tiendas Activas en Panamá (14)
 1. **Panafoto** (`panafoto.com`) — Magento 2 GraphQL paginado completo
 2. **Almacenes Titán** (`titan.com.pa`) — Shopify JSON (colecciones + catálogo filtrado de electrónica/electrodomésticos)
 3. **Multimax** (`multimax.net`) — Shopify JSON
@@ -238,6 +240,12 @@ PostgreSQL con **13 tablas** indexadas desde el día uno en todas las claves for
 6. **Yoytec** (`yoytec.com`) — Odoo eCommerce HTML + Cheerio
 7. **PTYTEC** (`ptytec.com`) — API Laravel (`webapi.ptytec.com/api`)
 8. **Do it Center** (`doitcenter.com.pa`) — Next.js `_next/data` + fallback Firecrawl
+9. **eVision Store** (`evisionstore.com`) — Índice público Algolia Search-Only + fallback HTML Botble (Cheerio)
+10. **Raenco** (`raenco.com`) — Magento 2 GraphQL (6 departamentos de electrónica y línea blanca)
+11. **PlayNTrade** (`pntpanama.com`) — REST API `/api/v6.2.7/products` (gaming, consolas y periféricos)
+12. **Samsung Shop PA** (`shop.samsung.com/latin/pa`) — Magento 2 GraphQL oficial (`Store: pa`)
+13. **LG Shop PA** (`lgshop.com.pa`) — VTEX Catalog Search REST oficial con EAN/GTIN
+14. **Sony Store PA** (`store.sony.com.pa`) — VTEX Catalog Search REST oficial (BRAVIA, PS5, WH/WF, Alpha)
 
 ### Reglas de Matching Estricto
 - Nunca se fusionan productos distintos que solo compartan marca y tamaño (ej. *Sony BRAVIA 8 OLED 65"* vs *BRAVIA 2 LED 65"*).

@@ -198,6 +198,101 @@ export const PANAMA_STORES: PanamaStoreConfig[] = [
     scrapePaths: ["/"],
     description: "Laptops, PCs gamer, mouse, teclados, monitores y tecnología en Panamá.",
   },
+  {
+    slug: "evisionstore",
+    name: "eVision Store",
+    baseUrl: "https://www.evisionstore.com",
+    platform: "custom",
+    color: "#0369A1",
+    accentBg: "#F0F9FF",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: [
+      "/products",
+      "/categorias/televisores_accesorios",
+      "/categorias/linea-blanca",
+      "/categorias/electrodomesticos",
+      "/categorias/audio",
+      "/categorias/computadoras",
+      "/categorias/moviles",
+      "/categorias/video-juegos",
+      "/categorias/impresion",
+    ],
+    description: "Televisores, línea blanca, aires acondicionados, audio, cómputo y electrónica en Panamá.",
+  },
+  {
+    slug: "raenco",
+    name: "Raenco",
+    baseUrl: "https://www.raenco.com",
+    platform: "magento",
+    color: "#B91C1C",
+    accentBg: "#FEF2F2",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: [
+      "/departamentos/tecnologia",
+      "/departamentos/linea-blanca",
+      "/departamentos/electrodomesticos",
+      "/departamentos/audio-y-video",
+      "/departamentos/aires-acondicionado",
+      "/departamentos/abanicos",
+    ],
+    description: "Tecnología, línea blanca, aires acondicionados, electrodomésticos y audio en Panamá.",
+  },
+  {
+    slug: "pntpanama",
+    name: "PlayNTrade",
+    baseUrl: "https://pntpanama.com",
+    platform: "custom",
+    color: "#4F46E5",
+    accentBg: "#EEF2FF",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: ["/search"],
+    description: "Consolas, videojuegos, controles, audífonos gamer y accesorios en Panamá.",
+  },
+  {
+    slug: "samsungpa",
+    name: "Samsung Shop PA",
+    baseUrl: "https://shop.samsung.com/latin/pa",
+    platform: "magento",
+    color: "#1428A0",
+    accentBg: "#EFF6FF",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: ["/"],
+    description: "Tienda oficial Samsung Panamá: Galaxy, Smart TV, línea blanca, monitores y audio.",
+  },
+  {
+    slug: "lgshoppa",
+    name: "LG Shop PA",
+    baseUrl: "https://www.lgshop.com.pa",
+    platform: "custom",
+    color: "#A50034",
+    accentBg: "#FFF1F2",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: ["/"],
+    description: "Tienda oficial LG Panamá: TVs OLED/QNED, aires Dual Inverter, lavadoras, neveras y audio.",
+  },
+  {
+    slug: "sonypa",
+    name: "Sony Store PA",
+    baseUrl: "https://store.sony.com.pa",
+    platform: "custom",
+    color: "#111827",
+    accentBg: "#F3F4F6",
+    country: "PA",
+    currency: "USD",
+    enabled: true,
+    scrapePaths: ["/"],
+    description: "Tienda oficial Sony Panamá: TVs BRAVIA, PlayStation 5, audífonos WH/WF, cámaras Alpha y audio.",
+  },
 ];
 
 export const productCategorySchema = z.enum(PRODUCT_CATEGORIES);
@@ -249,6 +344,51 @@ export const reportWrongPriceSchema = z.object({
 });
 
 export type ReportWrongPriceInput = z.infer<typeof reportWrongPriceSchema>;
+
+export const createStoreRequestSchema = z.object({
+  storeName: z
+    .string()
+    .trim()
+    .min(2, "Escribe el nombre de la tienda (mín. 2 caracteres)")
+    .max(80, "Máximo 80 caracteres"),
+  websiteUrl: z
+    .string()
+    .trim()
+    .max(240)
+    .optional()
+    .transform((val) => (val && val.length > 0 ? val : undefined))
+    .refine(
+      (val) =>
+        !val || /^(https?:\/\/)?[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(val),
+      "Ingresa un sitio web válido (ej. tienda.com.pa)"
+    ),
+  categoryHint: z.string().trim().max(80).optional(),
+  details: z.string().trim().max(300).optional(),
+  contactEmail: z
+    .string()
+    .trim()
+    .max(255)
+    .optional()
+    .transform((val) => (val && val.length > 0 ? val : undefined))
+    .refine(
+      (val) => !val || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val),
+      "Ingresa un correo electrónico válido"
+    ),
+});
+
+export type CreateStoreRequestInput = z.infer<typeof createStoreRequestSchema>;
+
+export interface StoreRequestSummaryDTO {
+  id: string;
+  storeName: string;
+  normalizedKey: string;
+  websiteUrl: string | null;
+  categoryHint: string | null;
+  votes: number;
+  status: "pending" | "reviewing" | "added" | "declined";
+  createdAt: string;
+  updatedAt: string;
+}
 
 export const triggerScrapeSchema = z.object({
   stores: z.array(z.string().min(1)).optional(),
@@ -417,6 +557,13 @@ export interface AnalyticsSummaryDTO {
   topSearches: Array<{ query: string; count: number; avgResults: number }>;
   zeroResultSearches: Array<{ query: string; count: number }>;
   openPriceReportsCount: number;
+  openStoreRequestsCount?: number;
+  topStoreRequests?: Array<{
+    storeName: string;
+    websiteUrl: string | null;
+    votes: number;
+    status: string;
+  }>;
   totalProducts: number;
   multiStoreProducts: number;
   multiStoreCoveragePct: number;

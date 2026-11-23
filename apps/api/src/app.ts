@@ -9,31 +9,39 @@ import { z } from "zod";
 import type { ZodError } from "zod";
 import {
   CATEGORY_LABELS,
+  PANAMA_STORES,
   PRODUCT_CATEGORIES,
   addListItemSchema,
   aiChatRequestSchema,
   createFavoriteSchema,
   createPriceAlertSchema,
   createShoppingListSchema,
+  createStoreRequestSchema,
   formatUsdFromCents,
   productSearchQuerySchema,
   reportWrongPriceSchema,
+  slugify,
   syncFavoritesSchema,
   triggerScrapeSchema,
   updateAlertSchema,
+  type CreateStoreRequestInput,
+  type PanamaStoreConfig,
   type ProductCategory,
   type ProductSearchQuery,
+  type StoreRequestSummaryDTO,
 } from "@regateo/shared";
 import {
   db,
   and,
   desc,
   eq,
+  inArray,
   sql,
   priceAlerts,
   priceReports,
   products,
   storeListings,
+  storeRequests,
   stores,
   outboundClicks,
 } from "@regateo/db";
@@ -49,7 +57,11 @@ import {
   structuredLogger,
   logger,
 } from "./lib/observability";
-import { authHandler, getSessionUser } from "./lib/auth";
+import { authHandler, getNeonAuthConfig, getSessionUser } from "./lib/auth";
+import {
+  getNeonRealtimeConfig,
+  sealPopularStoreRequestsQuery,
+} from "./lib/realtime";
 import {
   createBuiltinChallenge,
   getCaptchaPublicConfig,
@@ -69,7 +81,11 @@ import {
   type ScrapeRunDTO,
 } from "./services/catalog";
 import { getAnalyticsSummary } from "./services/admin-analytics";
-import { aiChatHandler } from "./routes/ai";
+import {
+  aiChatHandler,
+  fetchNeonAiGatewayStatus,
+  getNeonAiGatewayConfig,
+} from "./routes/ai";
 import {
   addItemToUserList,
   addUserFavorite,
@@ -143,6 +159,302 @@ async function sendAlertConfirmationEmail(
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// Sugerencias de tiendas (store_requests): normalización, detección de tiendas
+// ya monitoreadas y notificación interna opcional.
+// ---------------------------------------------------------------------------
+
+/** Dominio canónico (sin "www.") de una URL; null si no se puede parsear. */
+function hostnameOf(url: string): string | null {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+    return host.includes(".") ? host : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normaliza `websiteUrl`: si el usuario escribió "pricesmart.com" sin protocolo
+ * se antepone https:// de forma segura (sin romper la request si es inválido).
+ */
+function normalizeStoreRequestUrl(raw?: string | null): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  const withProtocol = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  return hostnameOf(withProtocol) ? withProtocol : null;
+}
+
+/**
+ * Alias con los que los usuarios panameños nombran a las tiendas que ya
+ * monitoreamos (marcas, siglas y dominios frecuentes). Se suman al `slug`, al
+ * `name` y al dominio de PANAMA_STORES al detectar sugerencias duplicadas.
+ * Sprint 7: 13 tiendas (incluye Raenco, PlayNTrade, Samsung Shop PA y LG Shop PA).
+ */
+const MONITORED_STORE_ALIASES: Record<string, string[]> = {
+  multimax: ["multimax panama", "multimax.net"],
+  panafoto: ["panafoto panama", "panafoto.com"],
+  rodelag: ["rodelag panama", "rodelag.com"],
+  titan: ["almacenes titan", "titan panama", "titan.com.pa"],
+  photura: ["photura panama", "photura.com"],
+  doitcenter: ["do it center panama", "doit center", "doitcenter.com.pa"],
+  yoytec: ["yoytec panama", "yoytec.com"],
+  ptytec: ["pty tec", "ptytec panama", "ptytec.com"],
+  evisionstore: ["evision", "evision store", "evision panama", "evisionstore.com"],
+  raenco: ["raenco", "raenco panama", "raenco.com"],
+  pntpanama: [
+    "playntrade",
+    "play n trade",
+    "play and trade",
+    "playntrade panama",
+    "pnt",
+    "pnt panama",
+    "pntpanama",
+    "pntpanama.com",
+  ],
+  samsungpa: [
+    "samsung",
+    "samsung shop",
+    "samsung shop pa",
+    "samsung panama",
+    "shop samsung",
+    "shop.samsung.com",
+  ],
+  lgshoppa: ["lg", "lg shop", "lg shop pa", "lg panama", "lgshop", "lgshop.com.pa"],
+  sonypa: [
+    "sony",
+    "sony store",
+    "sony store pa",
+    "sony panama",
+    "sony store panama",
+    "store sony",
+    "store.sony.com.pa",
+  ],
+};
+
+/** Claves normalizadas con las que se puede nombrar una tienda monitoreada. */
+function storeAliasKeys(store: PanamaStoreConfig): string[] {
+  return [
+    store.slug,
+    store.name,
+    hostnameOf(store.baseUrl) ?? "",
+    ...(MONITORED_STORE_ALIASES[store.slug] ?? []),
+  ]
+    .map((value) => slugify(value))
+    .filter((key) => key.length >= 2);
+}
+
+/** Índice clave normalizada → tienda, construido una sola vez al arrancar. */
+const monitoredStoreIndex = new Map<string, PanamaStoreConfig>();
+for (const store of PANAMA_STORES) {
+  if (!store.enabled) continue;
+  for (const key of storeAliasKeys(store)) {
+    if (!monitoredStoreIndex.has(key)) monitoredStoreIndex.set(key, store);
+  }
+}
+
+/** ¿El host corresponde a la tienda? Tolera subdominios (samsung.com ⊂ shop.samsung.com). */
+function hostsMatch(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+}
+
+/**
+ * Tienda activa de PANAMA_STORES que coincide por `slug`, `name`, alias común
+ * o dominio de `baseUrl`. Devuelve undefined si la tienda no se monitorea.
+ */
+function findMonitoredStore(
+  storeName: string,
+  websiteUrl: string | null
+): PanamaStoreConfig | undefined {
+  const key = slugify(storeName);
+  const byKey = key ? monitoredStoreIndex.get(key) : undefined;
+  if (byKey) return byKey;
+
+  // Dominio explícito (websiteUrl) o nombre escrito como dominio ("raenco.com").
+  const host =
+    (websiteUrl ? hostnameOf(websiteUrl) : null) ??
+    (storeName.trim() ? hostnameOf(`https://${storeName.trim()}`) : null);
+  if (!host) return undefined;
+  return PANAMA_STORES.find(
+    (store) => store.enabled && hostsMatch(host, hostnameOf(store.baseUrl))
+  );
+}
+
+/** DTO público de una sugerencia (nunca incluye datos personales). */
+function toStoreRequestSummary(
+  row: typeof storeRequests.$inferSelect
+): StoreRequestSummaryDTO {
+  return {
+    id: row.id,
+    storeName: row.storeName,
+    normalizedKey: row.normalizedKey,
+    websiteUrl: row.websiteUrl,
+    categoryHint: row.categoryHint,
+    votes: row.votes,
+    status: row.status as StoreRequestSummaryDTO["status"],
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** Suma un voto a una sugerencia existente y rellena campos que estaban vacíos. */
+async function bumpStoreRequestVote(
+  current: typeof storeRequests.$inferSelect,
+  input: CreateStoreRequestInput,
+  websiteUrl: string | null
+): Promise<typeof storeRequests.$inferSelect> {
+  const [updated] = await db
+    .update(storeRequests)
+    .set({
+      votes: sql`${storeRequests.votes} + 1`,
+      websiteUrl: current.websiteUrl ?? websiteUrl,
+      categoryHint: current.categoryHint ?? input.categoryHint ?? null,
+      details: current.details ?? input.details ?? null,
+      contactEmail: current.contactEmail ?? input.contactEmail ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(storeRequests.id, current.id))
+    .returning();
+  return updated;
+}
+
+/**
+ * Alta o voto de una sugerencia. Deduplica por `normalizedKey` y tolera la
+ * carrera de dos envíos simultáneos (el índice único gana y suma el voto).
+ * Devuelve también `txid` (PostgreSQL xact id) para sincronización Neon Realtime.
+ */
+async function registerStoreRequest(
+  input: CreateStoreRequestInput,
+  normalizedKey: string,
+  websiteUrl: string | null
+): Promise<{
+  row: typeof storeRequests.$inferSelect;
+  isDuplicateVote: boolean;
+  txid: string | null;
+}> {
+  const [existing] = await db
+    .select()
+    .from(storeRequests)
+    .where(eq(storeRequests.normalizedKey, normalizedKey))
+    .limit(1);
+
+  if (existing) {
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(storeRequests)
+        .set({
+          votes: sql`${storeRequests.votes} + 1`,
+          websiteUrl: existing.websiteUrl ?? websiteUrl,
+          categoryHint: existing.categoryHint ?? input.categoryHint ?? null,
+          details: existing.details ?? input.details ?? null,
+          contactEmail: existing.contactEmail ?? input.contactEmail ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(storeRequests.id, existing.id))
+        .returning();
+      const txRow = await tx.execute(sql`select pg_current_xact_id()::text as txid`);
+      const txid = (txRow[0] as { txid?: string } | undefined)?.txid ?? null;
+      return { row: updated, isDuplicateVote: true, txid };
+    });
+  }
+
+  try {
+    return await db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(storeRequests)
+        .values({
+          storeName: input.storeName,
+          normalizedKey,
+          websiteUrl,
+          categoryHint: input.categoryHint ?? null,
+          details: input.details ?? null,
+          contactEmail: input.contactEmail ?? null,
+          votes: 1,
+          status: "pending",
+        })
+        .returning();
+      const txRow = await tx.execute(sql`select pg_current_xact_id()::text as txid`);
+      const txid = (txRow[0] as { txid?: string } | undefined)?.txid ?? null;
+      return { row: inserted, isDuplicateVote: false, txid };
+    });
+  } catch (error) {
+    // Violación del índice único por concurrencia: otra request insertó primero.
+    logger.warn("store_request_insert_conflict", {
+      normalizedKey,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    const [raced] = await db
+      .select()
+      .from(storeRequests)
+      .where(eq(storeRequests.normalizedKey, normalizedKey))
+      .limit(1);
+    if (!raced) throw error;
+    return {
+      row: await bumpStoreRequestVote(raced, input, websiteUrl),
+      isDuplicateVote: true,
+      txid: null,
+    };
+  }
+}
+
+/** Aviso interno por correo de una sugerencia nueva vía Resend (fire-and-forget). */
+function notifyStoreRequestEmail(input: {
+  storeName: string;
+  websiteUrl: string | null;
+  categoryHint: string | null;
+  details: string | null;
+  contactEmail: string | null;
+  votes: number;
+  isDuplicateVote: boolean;
+}): void {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const supportEmail = process.env.SUPPORT_EMAIL?.trim();
+  if (!apiKey || !supportEmail) return;
+
+  const lines = [
+    `<p><strong>${escapeHtml(input.storeName)}</strong> — ${input.votes} voto(s)</p>`,
+    input.websiteUrl
+      ? `<p>Sitio: <a href="${escapeHtml(input.websiteUrl)}">${escapeHtml(input.websiteUrl)}</a></p>`
+      : "",
+    input.categoryHint ? `<p>Categoría: ${escapeHtml(input.categoryHint)}</p>` : "",
+    input.details ? `<p>Detalle: ${escapeHtml(input.details)}</p>` : "",
+    input.contactEmail ? `<p>Contacto: ${escapeHtml(input.contactEmail)}</p>` : "",
+  ].join("");
+
+  fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from: process.env.EMAIL_FROM ?? "Regateo <onboarding@resend.dev>",
+      to: supportEmail,
+      subject: input.isDuplicateVote
+        ? `[Regateo] Voto sumado: ${input.storeName} (${input.votes})`
+        : `[Regateo] Nueva sugerencia de tienda: ${input.storeName}`,
+      html: lines,
+    }),
+    signal: AbortSignal.timeout(5000),
+  }).catch((error) => {
+    logger.warn("store_request_email_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
+/**
+ * Router: herramienta de registro de una sugerencia (votos + caché + aviso).
+ * Honeypot antes de validar para descartar bots sin gastar el body.
+ */
+const storeRequestHoneypotGuard: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (c.req.header("x-captcha-hp")?.trim()) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  await next();
+};
 
 app.use(
   "*",
@@ -299,12 +611,22 @@ const routes = app
       dbStatus = "disconnected";
       captureException(error, { endpoint: "/api/health" });
     }
+    const neonAuth = getNeonAuthConfig();
+    const neonAiGateway = getNeonAiGatewayConfig();
+    const neonRealtime = getNeonRealtimeConfig();
     return c.json({
       ok: true,
       service: "regateoapp-api",
       timestamp: new Date().toISOString(),
       db: dbStatus,
       cache: cacheBackend,
+      neon: {
+        branch: process.env.NEON_BRANCH ?? null,
+        postgres: dbStatus,
+        auth: neonAuth.configured,
+        aiGateway: neonAiGateway.configured,
+        realtime: neonRealtime.configured,
+      },
     });
   })
 
@@ -335,15 +657,20 @@ const routes = app
   // Endpoints de credenciales protegidos contra bots (rate limit + captcha).
   // El resto de /api/auth/* (get-session, sign-out, etc.) sigue abierto a
   // través del catch-all de abajo.
-  .get("/api/auth/providers", (c) =>
-    c.json({
+  .get("/api/auth/providers", (c) => {
+    const neonAuth = getNeonAuthConfig();
+    return c.json({
       emailPassword: true,
       passwordReset: true,
       google: Boolean(
         process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ),
-    })
-  )
+      neonAuth: {
+        configured: neonAuth.configured,
+        baseUrl: neonAuth.baseUrl,
+      },
+    });
+  })
   .post(
     "/api/auth/sign-up/email",
     rateLimitMiddleware({ limit: 12, windowSec: 60, bucket: "auth-write" }),
@@ -392,6 +719,7 @@ const routes = app
             lastScrapedAt,
             // Productos con 2+ tiendas en stock (comparables reales)
             comparableCount: result.comparableCount,
+            ...(result.searchMeta ? { search: result.searchMeta } : {}),
           },
         };
       });
@@ -622,6 +950,122 @@ const routes = app
     }
   )
 
+  // ------------------------------------------------------------- sugerencias de tiendas
+  // Híbrido: votos en `store_requests` + aviso interno opcional por correo.
+  // Si la tienda ya se monitorea, no se escribe nada y se responde 200.
+  .post(
+    "/api/store-requests",
+    rateLimitMiddleware({ limit: 8, windowSec: 60, bucket: "store-requests" }),
+    storeRequestHoneypotGuard,
+    zValidator("json", createStoreRequestSchema, validationHook),
+    async (c) => {
+      const input = c.req.valid("json");
+      const websiteUrl = normalizeStoreRequestUrl(input.websiteUrl);
+
+      const monitored = findMonitoredStore(input.storeName, websiteUrl);
+      if (monitored) {
+        return c.json(
+          {
+            ok: true,
+            alreadyMonitored: true,
+            storeName: monitored.name,
+            message: `¡Buenas noticias! Ya monitoreamos ${monitored.name} en Regateo.`,
+          },
+          200
+        );
+      }
+
+      const normalizedKey =
+        slugify(input.storeName) || input.storeName.toLowerCase().trim();
+      const { row, isDuplicateVote, txid } = await registerStoreRequest(
+        input,
+        normalizedKey,
+        websiteUrl
+      );
+      const request = toStoreRequestSummary(row);
+
+      await cacheInvalidatePrefix("store-requests:");
+      notifyStoreRequestEmail({
+        storeName: request.storeName,
+        websiteUrl: request.websiteUrl,
+        categoryHint: request.categoryHint,
+        details: row.details,
+        contactEmail: row.contactEmail,
+        votes: request.votes,
+        isDuplicateVote,
+      });
+
+      return c.json(
+        {
+          ok: true,
+          alreadyMonitored: false,
+          isDuplicateVote,
+          request,
+          txid,
+          message: isDuplicateVote
+            ? `¡Sumamos tu voto! Ya van ${request.votes} personas pidiendo ${request.storeName}.`
+            : `¡Gracias! Registramos tu sugerencia para evaluar ${request.storeName}.`,
+        },
+        201
+      );
+    }
+  )
+
+  // Top de tiendas sugeridas (público, 60s de caché).
+  // Privacidad (Ley 81): NUNCA exponer `contactEmail` ni `details`.
+  .get(
+    "/api/store-requests/popular",
+    rateLimitMiddleware({ limit: 60, windowSec: 60, bucket: "store-requests-popular" }),
+    async (c) => {
+      const { value, cached } = await cacheGetOrSet(
+        "store-requests:popular",
+        60,
+        async () => {
+          const rows = await db
+            .select({
+              id: storeRequests.id,
+              storeName: storeRequests.storeName,
+              normalizedKey: storeRequests.normalizedKey,
+              websiteUrl: storeRequests.websiteUrl,
+              categoryHint: storeRequests.categoryHint,
+              votes: storeRequests.votes,
+              status: storeRequests.status,
+              createdAt: storeRequests.createdAt,
+              updatedAt: storeRequests.updatedAt,
+            })
+            .from(storeRequests)
+            .where(inArray(storeRequests.status, ["pending", "reviewing"]))
+            .orderBy(desc(storeRequests.votes), desc(storeRequests.updatedAt))
+            .limit(8);
+          return {
+            items: rows.map((row) => ({
+              id: row.id,
+              storeName: row.storeName,
+              normalizedKey: row.normalizedKey,
+              websiteUrl: row.websiteUrl,
+              categoryHint: row.categoryHint,
+              votes: row.votes,
+              status: row.status,
+              createdAt: row.createdAt.toISOString(),
+              updatedAt: row.updatedAt.toISOString(),
+            })),
+          };
+        }
+      );
+      return c.json({ items: value.items, meta: { cached } });
+    }
+  )
+
+  // Neon Realtime: sella la consulta en vivo de tiendas sugeridas (solo columnas públicas).
+  .get(
+    "/api/realtime/store-requests",
+    rateLimitMiddleware({ limit: 60, windowSec: 60, bucket: "realtime-seal" }),
+    async (c) => {
+      const result = await sealPopularStoreRequestsQuery();
+      return c.json(result);
+    }
+  )
+
   // ------------------------------------------------------------- Mi Espacio (auth)
   .get("/api/me/overview", requireUser, async (c) => {
     const me = c.get("meUser");
@@ -766,6 +1210,21 @@ const routes = app
   })
 
   // ------------------------------------------------------------- ai chat
+  .get(
+    "/api/ai/status",
+    rateLimitMiddleware({ limit: 30, windowSec: 60, bucket: "ai-status" }),
+    async (c) => {
+      const neonGateway = await fetchNeonAiGatewayStatus();
+      return c.json({
+        neonAiGateway: neonGateway,
+        fallbackProviders: {
+          deepseek: Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
+          openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+          deterministic: true,
+        },
+      });
+    }
+  )
   .post(
     "/api/ai/chat",
     rateLimitMiddleware({ limit: 20, windowSec: 60, bucket: "ai-chat" }),
