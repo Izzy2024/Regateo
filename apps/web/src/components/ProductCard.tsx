@@ -119,6 +119,7 @@ export const ProductCard = memo(function ProductCard({
               alt={product.canonicalName}
               loading="lazy"
               decoding="async"
+              referrerPolicy="no-referrer"
               onError={() => setImgFailed(true)}
               className="max-h-full max-w-full object-contain mix-blend-multiply"
             />

@@ -8,6 +8,44 @@ export default defineConfig({
     },
   },
   auth: true,
+  functions: {
+    api: {
+      name: "Regateo API",
+      source: "apps/api/src/neon-api.ts",
+      env: {
+        NODE_ENV: "production",
+        WEB_URL: { value: process.env.WEB_URL ?? "http://localhost:5173", required: false },
+        ALLOWED_ORIGINS: { value: process.env.ALLOWED_ORIGINS, required: false },
+        BETTER_AUTH_SECRET: { value: process.env.BETTER_AUTH_SECRET, required: true },
+        CRON_SECRET: { value: process.env.CRON_SECRET, required: true },
+        DEEPSEEK_API_KEY: { value: process.env.DEEPSEEK_API_KEY, required: false },
+        DEEPSEEK_BASE_URL: { value: process.env.DEEPSEEK_BASE_URL, required: false },
+        OPENROUTER_API_KEY: { value: process.env.OPENROUTER_API_KEY, required: false },
+        AI_MODEL: { value: process.env.AI_MODEL ?? "deepseek-chat", required: false },
+        RESEND_API_KEY: { value: process.env.RESEND_API_KEY, required: false },
+        SUPPORT_EMAIL: { value: process.env.SUPPORT_EMAIL, required: false },
+      },
+    },
+    cron: {
+      name: "Regateo Scheduled Price Refresh",
+      source: "apps/api/src/neon-cron.ts",
+      env: {
+        NODE_ENV: "production",
+        CRON_STORES: { value: process.env.CRON_STORES, required: false },
+        CRON_MAX_PER_STORE: { value: process.env.CRON_MAX_PER_STORE ?? "400", required: false },
+        RESEND_API_KEY: { value: process.env.RESEND_API_KEY, required: false },
+      },
+    },
+  },
+  triggers: {
+    "daily-price-refresh": {
+      type: "schedule",
+      function: "cron",
+      // Todos los días a las 08:00 UTC (03:00 AM hora de Panamá)
+      cron: "0 8 * * *",
+      functionPath: "/cron",
+    },
+  },
   // Branch policy: per-branch tuning
   branch: (branch) => {
     if (branch.isDefault) {

@@ -411,6 +411,7 @@ function SimilarProductThumb({
         alt={alt}
         loading="lazy"
         decoding="async"
+        referrerPolicy="no-referrer"
         onError={() => setFailed(true)}
         className="max-h-full max-w-full object-contain mix-blend-multiply"
       />
@@ -722,6 +723,7 @@ export function ProductDetailModal() {
                   <img
                     src={product.imageUrl}
                     alt={product.canonicalName}
+                    referrerPolicy="no-referrer"
                     onError={() => setImgFailed(true)}
                     className="max-h-full max-w-full object-contain mix-blend-multiply"
                   />

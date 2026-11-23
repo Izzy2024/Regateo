@@ -456,18 +456,28 @@ const storeRequestHoneypotGuard: MiddlewareHandler<AppEnv> = async (c, next) => 
   await next();
 };
 
+const extraAllowedOrigins = (process.env.ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+function isAllowedCorsOrigin(origin: string): boolean {
+  if (origin === webUrl) return true;
+  if (extraAllowedOrigins.includes(origin)) return true;
+  if (/^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/i.test(origin)) return true;
+  if (/^https:\/\/([a-z0-9-]+\.)?regateo\.pa$/i.test(origin)) return true;
+  if (!isProduction && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
+    return true;
+  }
+  return false;
+}
+
 app.use(
   "*",
   cors({
     origin: (origin) => {
       if (!origin) return webUrl;
-      if (origin === webUrl) return origin;
-      if (
-        !isProduction &&
-        /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)
-      ) {
-        return origin;
-      }
+      if (isAllowedCorsOrigin(origin)) return origin;
       return webUrl;
     },
     credentials: true,

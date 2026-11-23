@@ -47,6 +47,7 @@ export function ProductThumb({
         alt={alt}
         loading="lazy"
         decoding="async"
+        referrerPolicy="no-referrer"
         onError={() => setFailed(true)}
         className="max-h-full max-w-full object-contain mix-blend-multiply"
       />

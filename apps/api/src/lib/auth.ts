@@ -104,6 +104,12 @@ export const auth = betterAuth({
     webUrl,
     "http://localhost:5173",
     "http://localhost:4173",
+    "https://*.workers.dev",
+    "https://*.regateo.pa",
+    ...(process.env.ALLOWED_ORIGINS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
     ...(cookieDomain ? [`https://${cookieDomain}`, `https://app.${cookieDomain}`] : []),
   ],
   advanced: {
