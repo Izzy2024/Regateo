@@ -33,6 +33,7 @@ export default defineConfig({
         SUPPORT_EMAIL: { value: process.env.SUPPORT_EMAIL, required: false },
         UPSTASH_REDIS_REST_URL: { value: process.env.UPSTASH_REDIS_REST_URL, required: false },
         UPSTASH_REDIS_REST_TOKEN: { value: process.env.UPSTASH_REDIS_REST_TOKEN, required: false },
+        TURNSTILE_SITE_KEY: { value: process.env.TURNSTILE_SITE_KEY, required: false },
         TURNSTILE_SECRET_KEY: { value: process.env.TURNSTILE_SECRET_KEY, required: false },
       },
     },

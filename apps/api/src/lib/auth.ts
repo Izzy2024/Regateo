@@ -46,6 +46,51 @@ const baseURL =
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() || undefined;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined;
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Correo de bienvenida al registrarse vía Resend (fire-and-forget). */
+async function sendWelcomeEmail(target: { email: string; name?: string | null }): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  if (!apiKey || !target.email) return;
+
+  const firstName = escapeHtml((target.name?.trim() || "ahorrador").split(/\s+/)[0] || "ahorrador");
+  const from =
+    process.env.EMAIL_FROM?.trim() ||
+    process.env.ALERTS_FROM_EMAIL?.trim() ||
+    "Regateo <hola@regateo.org>";
+
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: target.email,
+      subject: "¡Bienvenido a Regateo! Empieza a comparar precios en Panamá",
+      html: `<div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:2rem auto;padding:1.5rem;border:1px solid #e7e5df;border-radius:14px;color:#111315;background:#ffffff">
+  <h2 style="margin:0 0 0.75rem;font-size:1.35rem;color:#111315">¡Hola ${firstName}, bienvenido a Regateo!</h2>
+  <p style="margin:0 0 1rem;color:#525866;line-height:1.55">Tu cuenta ya está activa. Ahora puedes comparar precios reales en <strong>14 tiendas de electrónica de Panamá</strong>, guardar favoritos, armar listas de presupuesto y crear alertas cuando bajen de precio.</p>
+  <p style="margin:1.25rem 0"><a href="${webUrl}" style="display:inline-block;background:#E64825;color:#ffffff;font-weight:600;padding:0.75rem 1.4rem;border-radius:8px;text-decoration:none">Explorar ofertas en Regateo</a></p>
+  <p style="margin:1.25rem 0 0;color:#666D7C;font-size:0.82rem;line-height:1.45">¿Falta tu tienda favorita? Puedes sugerirla directo desde la web.<br>— El equipo de Regateo (${webUrl.replace(/^https?:\/\//, "")})</p>
+</div>`,
+    }),
+    signal: AbortSignal.timeout(5000),
+  }).catch((error) => {
+    logger.warn("welcome_email_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
 export const auth = betterAuth({
   baseURL,
   secret: resolveAuthSecret(),
@@ -54,6 +99,18 @@ export const auth = betterAuth({
     provider: "pg",
     schema: { user, session, account, verification },
   }),
+  databaseHooks: {
+    user: {
+      create: {
+        after: async (createdUser) => {
+          void sendWelcomeEmail({
+            email: createdUser.email,
+            name: createdUser.name,
+          });
+        },
+      },
+    },
+  },
   emailAndPassword: {
     enabled: true,
     autoSignIn: true,
