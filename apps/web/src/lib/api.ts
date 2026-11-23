@@ -194,17 +194,87 @@ export class ApiError extends Error {
   }
 }
 
+const AUTH_TOKEN_STORAGE_KEY = "regateo_auth_token";
+
+export function getStoredAuthToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredAuthToken(token: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // storage bloqueado (modo privado estricto)
+  }
+}
+
+export function localizeAuthError(rawMessage: string, fallback: string): string {
+  const normalized = rawMessage.trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (
+    normalized.includes("invalid email or password") ||
+    normalized.includes("invalid_email_or_password") ||
+    normalized.includes("invalid credentials") ||
+    normalized.includes("credential account not found")
+  ) {
+    return "Correo o contraseña incorrectos. Verifica tus datos e intenta de nuevo.";
+  }
+  if (
+    normalized.includes("user already exists") ||
+    normalized.includes("user_already_exists") ||
+    normalized.includes("already registered")
+  ) {
+    return "Ya existe una cuenta registrada con este correo. Intenta iniciar sesión.";
+  }
+  if (
+    normalized.includes("password is too short") ||
+    normalized.includes("password_too_short")
+  ) {
+    return "La contraseña es muy corta (debe tener al menos 8 caracteres).";
+  }
+  if (
+    normalized.includes("password is too long") ||
+    normalized.includes("password_too_long")
+  ) {
+    return "La contraseña es demasiado larga.";
+  }
+  if (normalized.includes("invalid email") || normalized.includes("invalid_email")) {
+    return "El correo electrónico no es válido.";
+  }
+  if (normalized.includes("too many requests") || normalized.includes("rate limit")) {
+    return "Demasiados intentos seguidos. Espera un minuto y vuelve a intentar.";
+  }
+  return rawMessage;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
+  const storedToken = getStoredAuthToken();
   const res = await fetch(url, {
     credentials: "include",
     ...init,
     headers: {
       Accept: "application/json",
+      ...(storedToken ? { Authorization: `Bearer ${storedToken}` } : {}),
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
     },
   });
+
+  const authHeaderToken = res.headers.get("set-auth-token");
+  if (authHeaderToken) {
+    setStoredAuthToken(authHeaderToken);
+  }
 
   if (!res.ok) {
     let message = `Error ${res.status} al conectar con el servidor`;
@@ -212,10 +282,11 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       const payload = (await res.json()) as {
         error?: string;
+        code?: string;
         message?: string;
         details?: unknown;
       };
-      message = payload.message || payload.error || message;
+      message = payload.message || payload.code || payload.error || message;
       details = payload.details;
     } catch {
       // fallback to status text
@@ -364,13 +435,20 @@ export function triggerManualScrape(options?: {
 
 export async function getAuthSession(): Promise<AuthSessionResponse> {
   try {
+    const storedToken = getStoredAuthToken();
     const res = await fetch(`${API_BASE_URL}/api/auth/get-session`, {
       credentials: "include",
-      headers: { Accept: "application/json" },
+      headers: {
+        Accept: "application/json",
+        ...(storedToken ? { Authorization: `Bearer ${storedToken}` } : {}),
+      },
     });
     if (!res.ok) return { user: null, session: null };
     const data = (await res.json()) as Partial<AuthSessionResponse> | null;
-    if (!data || !data.user) return { user: null, session: null };
+    if (!data || !data.user) {
+      if (storedToken) setStoredAuthToken(null);
+      return { user: null, session: null };
+    }
     return {
       user: data.user,
       session: data.session ?? null,
@@ -386,12 +464,17 @@ export async function signInWithEmail(
     password: string;
   },
   captcha?: CaptchaHeaders
-): Promise<{ user: AuthUser }> {
-  return apiFetch<{ user: AuthUser }>("/api/auth/sign-in/email", {
-    method: "POST",
-    headers: buildCaptchaHeaders(captcha),
-    body: JSON.stringify(input),
-  });
+): Promise<{ user: AuthUser; token?: string }> {
+  const result = await apiFetch<{ user: AuthUser; token?: string }>(
+    "/api/auth/sign-in/email",
+    {
+      method: "POST",
+      headers: buildCaptchaHeaders(captcha),
+      body: JSON.stringify(input),
+    }
+  );
+  if (result.token) setStoredAuthToken(result.token);
+  return result;
 }
 
 export async function signUpWithEmail(
@@ -401,24 +484,37 @@ export async function signUpWithEmail(
     password: string;
   },
   captcha?: CaptchaHeaders
-): Promise<{ user: AuthUser }> {
-  return apiFetch<{ user: AuthUser }>("/api/auth/sign-up/email", {
-    method: "POST",
-    headers: buildCaptchaHeaders(captcha),
-    body: JSON.stringify(input),
-  });
+): Promise<{ user: AuthUser; token?: string }> {
+  const result = await apiFetch<{ user: AuthUser; token?: string }>(
+    "/api/auth/sign-up/email",
+    {
+      method: "POST",
+      headers: buildCaptchaHeaders(captcha),
+      body: JSON.stringify(input),
+    }
+  );
+  if (result.token) setStoredAuthToken(result.token);
+  return result;
 }
 
 export const authSignIn = signInWithEmail;
 export const authSignUp = signUpWithEmail;
 
 export async function signOutAuth(): Promise<void> {
-  await fetch(`${API_BASE_URL}/api/auth/sign-out`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
-  });
+  const storedToken = getStoredAuthToken();
+  try {
+    await fetch(`${API_BASE_URL}/api/auth/sign-out`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(storedToken ? { Authorization: `Bearer ${storedToken}` } : {}),
+      },
+      body: JSON.stringify({}),
+    });
+  } finally {
+    setStoredAuthToken(null);
+  }
 }
 
 export interface AuthProvidersResponse {

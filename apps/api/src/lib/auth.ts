@@ -5,6 +5,7 @@
 // ============================================================================
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { bearer } from "better-auth/plugins";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import {
   db,
@@ -48,6 +49,7 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined
 export const auth = betterAuth({
   baseURL,
   secret: resolveAuthSecret(),
+  plugins: [bearer()],
   database: drizzleAdapter(db, {
     provider: "pg",
     schema: { user, session, account, verification },

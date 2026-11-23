@@ -6,13 +6,15 @@ import {
   Bell,
   CheckCircle2,
   ClipboardList,
+  Eye,
+  EyeOff,
   Heart,
   KeyRound,
   Loader2,
   LogOut,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import {
@@ -24,6 +26,7 @@ import {
   API_BASE_URL,
   type CaptchaHeaders,
   fetchAuthProviders,
+  localizeAuthError,
   requestPasswordReset,
   resetPasswordWithToken,
   signInWithEmail,
@@ -41,8 +44,10 @@ const signInSchema = z.object({
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres"),
 });
 
-const signUpSchema = signInSchema.extend({
+const signUpSchema = z.object({
   name: z.string().min(2, "Ingresa tu nombre"),
+  email: z.string().email("Ingresa un correo válido"),
+  password: z.string().min(8, "La contraseña debe tener al menos 8 caracteres"),
 });
 
 type SignInForm = z.infer<typeof signInSchema>;
@@ -79,6 +84,8 @@ export function AuthModal() {
 
   const [mode, setMode] = useState<"signin" | "signup">(authMode);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [captcha, setCaptcha] = useState<CaptchaHeaders | null>(null);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
@@ -87,11 +94,26 @@ export function AuthModal() {
   const [forgotSent, setForgotSent] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [resetDone, setResetDone] = useState(false);
+  const closeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (authOpen) {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
       setMode(authMode);
       setAuthError(null);
+      setAuthSuccess(null);
+      setShowPassword(false);
       setCaptcha(null);
       setPrivacyAccepted(false);
       setCaptchaResetKey((k) => k + 1);
@@ -115,19 +137,36 @@ export function AuthModal() {
   const signInMutation = useMutation({
     mutationFn: (vars: { data: SignInForm; captcha: CaptchaHeaders }) =>
       signInWithEmail(vars.data, vars.captcha),
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       setAuthError(null);
+      setAuthSuccess(
+        `¡Sesión iniciada correctamente! Bienvenido${res.user?.name ? `, ${res.user.name}` : ""}. Entrando a Mi Espacio...`
+      );
       setCaptcha(null);
       setCaptchaResetKey((k) => k + 1);
-      await queryClient.invalidateQueries({ queryKey: AUTH_SESSION_QUERY_KEY });
+      if (res.user) {
+        queryClient.setQueryData(AUTH_SESSION_QUERY_KEY, {
+          user: res.user,
+          session: null,
+        });
+      }
+      await queryClient.refetchQueries({ queryKey: AUTH_SESSION_QUERY_KEY });
       await queryClient.invalidateQueries({ queryKey: USER_OVERVIEW_QUERY_KEY });
-      setAuthOpen(false);
+      closeTimerRef.current = window.setTimeout(() => {
+        closeTimerRef.current = null;
+        setAuthOpen(false);
+        setActiveView("mi-espacio");
+      }, 900);
     },
     onError: (err) => {
+      setAuthSuccess(null);
       setCaptcha(null);
       setCaptchaResetKey((k) => k + 1);
       setAuthError(
-        err instanceof Error ? err.message : "Credenciales incorrectas."
+        localizeAuthError(
+          err instanceof Error ? err.message : "",
+          "Correo o contraseña incorrectos."
+        )
       );
     },
   });
@@ -135,20 +174,37 @@ export function AuthModal() {
   const signUpMutation = useMutation({
     mutationFn: (vars: { data: SignUpForm; captcha: CaptchaHeaders }) =>
       signUpWithEmail(vars.data, vars.captcha),
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       setAuthError(null);
+      setAuthSuccess(
+        `¡Cuenta creada correctamente! Bienvenido${res.user?.name ? `, ${res.user.name}` : ""}. Entrando a Mi Espacio...`
+      );
       setCaptcha(null);
       setPrivacyAccepted(false);
       setCaptchaResetKey((k) => k + 1);
-      await queryClient.invalidateQueries({ queryKey: AUTH_SESSION_QUERY_KEY });
+      if (res.user) {
+        queryClient.setQueryData(AUTH_SESSION_QUERY_KEY, {
+          user: res.user,
+          session: null,
+        });
+      }
+      await queryClient.refetchQueries({ queryKey: AUTH_SESSION_QUERY_KEY });
       await queryClient.invalidateQueries({ queryKey: USER_OVERVIEW_QUERY_KEY });
-      setAuthOpen(false);
+      closeTimerRef.current = window.setTimeout(() => {
+        closeTimerRef.current = null;
+        setAuthOpen(false);
+        setActiveView("mi-espacio");
+      }, 900);
     },
     onError: (err) => {
+      setAuthSuccess(null);
       setCaptcha(null);
       setCaptchaResetKey((k) => k + 1);
       setAuthError(
-        err instanceof Error ? err.message : "No se pudo crear la cuenta."
+        localizeAuthError(
+          err instanceof Error ? err.message : "",
+          "No se pudo crear la cuenta. Intenta de nuevo."
+        )
       );
     },
   });
@@ -257,6 +313,12 @@ export function AuthModal() {
       }
     >
       <div className="p-5 sm:p-6">
+        {authSuccess ? (
+          <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-[#A7F3D0] bg-[#ECFDF5] p-3.5 text-xs font-semibold text-[#047857]">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            <p className="leading-relaxed">{authSuccess}</p>
+          </div>
+        ) : null}
         {user ? (
           <div className="space-y-5">
             <div className="flex items-center justify-between gap-3 rounded-xl border border-[#E7E5DF] bg-[#FAFAF7] p-4">
@@ -486,14 +548,25 @@ export function AuthModal() {
                       >
                         Nueva contraseña
                       </label>
-                      <Input
-                        id="reset-new-password"
-                        type="password"
-                        placeholder="Mínimo 6 caracteres"
-                        value={newPassword}
-                        onChange={(e) => setNewPassword(e.target.value)}
-                        required
-                      />
+                      <div className="relative">
+                        <Input
+                          id="reset-new-password"
+                          type={showPassword ? "text" : "password"}
+                          placeholder="Mínimo 8 caracteres"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          className="pr-10"
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((v) => !v)}
+                          aria-label={showPassword ? "Ocultar contraseña" : "Ver contraseña"}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#666D7C] hover:text-[#111315] cursor-pointer"
+                        >
+                          {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
                     </div>
 
                     {authError ? (
@@ -606,12 +679,23 @@ export function AuthModal() {
                   >
                     Contraseña
                   </label>
-                  <Input
-                    id="signin-password"
-                    type="password"
-                    placeholder="••••••••"
-                    {...signInForm.register("password")}
-                  />
+                  <div className="relative">
+                    <Input
+                      id="signin-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="••••••••"
+                      className="pr-10"
+                      {...signInForm.register("password")}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-label={showPassword ? "Ocultar contraseña" : "Ver contraseña"}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#666D7C] hover:text-[#111315] cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
                   {signInForm.formState.errors.password ? (
                     <p className="mt-1 text-xs text-[#DC2626]">
                       {signInForm.formState.errors.password.message}
@@ -728,12 +812,23 @@ export function AuthModal() {
                   >
                     Contraseña
                   </label>
-                  <Input
-                    id="signup-password"
-                    type="password"
-                    placeholder="Mínimo 6 caracteres"
-                    {...signUpForm.register("password")}
-                  />
+                  <div className="relative">
+                    <Input
+                      id="signup-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Mínimo 8 caracteres"
+                      className="pr-10"
+                      {...signUpForm.register("password")}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-label={showPassword ? "Ocultar contraseña" : "Ver contraseña"}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#666D7C] hover:text-[#111315] cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
                   {signUpForm.formState.errors.password ? (
                     <p className="mt-1 text-xs text-[#DC2626]">
                       {signUpForm.formState.errors.password.message}

@@ -491,7 +491,7 @@ app.use(
       "x-captcha-answer",
       "x-captcha-hp",
     ],
-    exposeHeaders: ["Content-Type"],
+    exposeHeaders: ["Content-Type", "set-auth-token"],
   })
 );
 
