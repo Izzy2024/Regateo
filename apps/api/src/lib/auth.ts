@@ -31,8 +31,14 @@ function resolveAuthSecret(): string {
 
 const webUrl = process.env.WEB_URL ?? "http://localhost:5173";
 const cookieDomain = process.env.COOKIE_DOMAIN?.trim() || undefined;
+const isProduction = process.env.NODE_ENV === "production";
+const neonFunctionApiUrl =
+  process.env.NEON_BRANCH_ID && process.env.NEON_FUNCTION_HOST_SUFFIX
+    ? `https://${process.env.NEON_BRANCH_ID}-api${process.env.NEON_FUNCTION_HOST_SUFFIX}`
+    : undefined;
 const baseURL =
   process.env.BETTER_AUTH_URL ??
+  neonFunctionApiUrl ??
   process.env.API_URL ??
   `http://localhost:${process.env.PORT ?? 3001}`;
 
@@ -116,9 +122,10 @@ export const auth = betterAuth({
     crossSubDomainCookies: cookieDomain
       ? { enabled: true, domain: cookieDomain }
       : undefined,
-    defaultCookieAttributes: cookieDomain
-      ? { sameSite: "none" }
-      : { sameSite: "lax" },
+    defaultCookieAttributes:
+      cookieDomain || isProduction
+        ? { sameSite: "none", secure: true }
+        : { sameSite: "lax" },
   },
 });
 

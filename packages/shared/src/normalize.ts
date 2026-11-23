@@ -117,39 +117,147 @@ export function extractModelNumber(title: string, sku?: string | null): string |
   return null;
 }
 
-export function classifyCategory(title: string, productType?: string | null): ProductCategory {
-  const text = `${title} ${productType ?? ""}`
+function normalizeForClassify(value: string): string {
+  return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+}
 
-  if (/(lavadora|secadora|refrigeradora|nevera|estufa|congelador|lavavajillas|centro de lavado|linea blanca)/.test(text)) {
-    return "linea-blanca";
+/**
+ * Clasifica un producto por su sujeto principal (título primero, `productType`
+ * solo como desempate). Evita falsos positivos como "Teclado para Laptop" en
+ * `computadoras`, "Cartucho de tinta" en `computadoras`, o "Funda para iPhone"
+ * / "Smartwatch" / "Tablet" en `celulares`.
+ */
+export function classifyCategory(title: string, productType?: string | null): ProductCategory {
+  const titleNorm = normalizeForClassify(title);
+  // Cabeza del título (primeros 75 chars) para detectar el sujeto real del producto.
+  const head = titleNorm.slice(0, 75);
+
+  // 1. Consumibles, fundas, soportes, cables, cargadores y servicios -> accesorios
+  //    (siempre antes de laptop/celular/tv porque dicen "para Laptop/iPhone/TV")
+  const isConsumableOrAccessoryHead =
+    /\b(tinta|cartucho|toner|botella de tinta|funda|carcasa|case|cover|protector|mica|vidrio templado|estuche|correa|soporte|brazo|stand|mount|base enfriadora|base para|cable|adaptador|cargador|power\s?bank|bateria externa|bateria para|repuesto|cambio\/instalacion|instalacion de|filtro de agua|bolsa para|mochila|maletin|memoria usb|pendrive|micro\s?sd|tarjeta sd|capturadora|regleta|protector de voltaje|ups)\b/.test(
+      head
+    );
+  const isPrimaryComputerOrPhoneHead =
+    /^(?:[a-z0-9+&'.\-]+\s+){0,2}(laptop|notebook|macbook|computadora?|pc\b|all[\s-]in[\s-]one|chromebook|imac|desktop|mini\s?pc|celular|smartphone|iphone|telefono|televisor|smart\s?tv|lavadora|secadora|refrigeradora|nevera|aire acondicionado)\b/.test(
+      head
+    );
+
+  if (isConsumableOrAccessoryHead && !isPrimaryComputerOrPhoneHead) {
+    return "accesorios";
   }
-  if (/(aire acondicionado|split|inverter.*btu|\bbtu\b|mini split)/.test(text)) {
-    return "aires-acondicionados";
+
+  // 2. Relojes inteligentes / wearables -> accesorios (nunca celulares)
+  if (
+    /\b(smartwatch|smart\s?watch|reloj inteligente|apple\s?watch|galaxy\s?watch|huawei\s?watch|xiaomi\s?watch|watch\s?(?:ultra|se|series|\d)|smart\s?band|mi\s?band|fitbit|garmin\s?(?:forerunner|fenix|venu|vivoactive|instinct))\b/.test(
+      titleNorm
+    ) &&
+    !isPrimaryComputerOrPhoneHead
+  ) {
+    return "accesorios";
   }
-  if (/(televisor|smart tv|\btv\b|oled|qled|uhd|nanocell|google tv|roku tv)/.test(text)) {
-    return "televisores";
-  }
-  if (/(laptop|notebook|macbook|computadora|all-in-one|pc escritorio|chromebook|imac|desktop|monitor)/.test(text)) {
-    return "computadoras";
-  }
-  if (/(mouse|raton|teclado|keyboard|webcam|headset|audifono gamer|mousepad|hub usb|dock)/.test(text)) {
+
+  // 3. Periféricos e impresión (sujeto principal en cabeza del título)
+  if (
+    /\b(mouse|raton|teclado|keyboard|webcam|camara web|mousepad|alfombrilla|hub\s?usb|docking|impresora|multifuncional|escaner|scanner|router|repetidor|mesh\s?wi-?fi|switch\s?(?:de red|gigabit|poe))\b/.test(
+      head
+    ) &&
+    !isPrimaryComputerOrPhoneHead
+  ) {
     return "perifericos";
   }
-  if (/(iphone|galaxy s|galaxy a|redmi|celular|smartphone|ipad|tablet|reloj inteligente|smartwatch)/.test(text)) {
-    return "celulares";
+
+  // 4. Línea blanca
+  if (
+    /\b(lavadora|secadora|refrigeradora|refrigerador|nevera|estufa|congelador|freezer|lavavajillas|centro de lavado|vinera|campana extractora|linea blanca)\b/.test(
+      titleNorm
+    )
+  ) {
+    return "linea-blanca";
   }
-  if (/(playstation|ps5|xbox|nintendo|switch|consola|control dualsense|gamer|gaming)/.test(text)) {
+
+  // 5. Aires acondicionados
+  if (/\b(aire acondicionado|mini\s?split|inverter.*\bbtu\b|\bbtu\b|aire\s+split)\b/.test(titleNorm)) {
+    return "aires-acondicionados";
+  }
+
+  // 6. Televisores
+  if (
+    /\b(televisor|smart\s?tv|\btv\b|oled|qled|uhd|nanocell|google\s?tv|roku\s?tv|bravia)\b/.test(
+      titleNorm
+    ) &&
+    !/\b(soporte|base|control remoto|cable|antena|mueble|rack|barra de sonido|soundbar)\b/.test(head)
+  ) {
+    return "televisores";
+  }
+
+  // 7. Gaming y consolas (antes de computadoras/audio para consolas y headsets gamer)
+  if (
+    /\b(playstation|ps5|ps4|xbox|nintendo\s?switch|consola|control\s+dualsense|dualsense|joy-?con|steam\s?deck|rog\s?ally)\b/.test(
+      titleNorm
+    )
+  ) {
     return "gaming";
   }
-  if (/(bocina|parlante|barra de sonido|soundbar|audifono|auricular|airpods|microfono|subwoofer|audio|speaker)/.test(text)) {
+
+  // 8. Computadoras, laptops, monitores y tablets/iPads (con borde de palabra: evita "tabletops")
+  if (
+    /\b(laptop|notebook|macbook|computadora?|all[\s-]in[\s-]one|pc\s+escritorio|chromebook|imac|mac\s?mini|desktop|mini\s?pc|monitor|tablet|tablets|ipad|galaxy\s?tab|lenovo\s?tab|honor\s?pad|redmi\s?pad|xiaomi\s?pad)\b/.test(
+      titleNorm
+    )
+  ) {
+    return "computadoras";
+  }
+
+  // 9. Celulares / Smartphones únicamente (sin tablets ni relojes ni fundas)
+  if (
+    /\b(celular|smartphone|iphone|galaxy\s?(?:s\d|a\d|z\s?(?:fold|flip)|m\d|note)|redmi\s?(?:note|\d|a\d)|poco\s?[xfmc]\d|moto\s?[ge]\d|motorola\s?(?:edge|razr|moto)|honor\s?(?:magic|x\d|\d{2,3})|xiaomi\s?1\d|tecno\s?(?:spark|camon|pova)|infinix\s?(?:hot|note|smart|gt)|realme\s?(?:c\d|\d)|pixel\s?\d)\b/.test(
+      titleNorm
+    )
+  ) {
+    return "celulares";
+  }
+
+  // 10. Periféricos en el resto del título
+  if (
+    /\b(mouse|raton|teclado|keyboard|webcam|headset|audifono gamer|mousepad|hub\s?usb|dock|impresora|escaner|router)\b/.test(
+      titleNorm
+    )
+  ) {
+    return "perifericos";
+  }
+
+  // 11. Audio y sonido
+  if (
+    /\b(bocina|parlante|barra de sonido|soundbar|audifono|audifonos|auricular|auriculares|airpods|earbuds|microfono|subwoofer|torre de sonido|minicomponente|home\s?theater|speaker|tocadiscos|amplificador)\b/.test(
+      titleNorm
+    )
+  ) {
     return "audio";
   }
-  if (/(licuadora|microondas|freidora|air fryer|cafetera|plancha|aspiradora|batidora|tostadora|horno|abanico|ventilador)/.test(text)) {
+
+  // 12. Electrodomésticos / Hogar
+  if (
+    /\b(licuadora|microondas|freidora|air\s?fryer|cafetera|plancha|aspiradora|batidora|tostadora|horno|abanico|ventilador|arrocera|olla|sandwichera|procesador de alimentos|extractor de jugo|hervidor|waflera|dispensador de agua|purificador|deshumidificador|humidificador)\b/.test(
+      titleNorm
+    )
+  ) {
     return "electrodomesticos";
   }
+
+  // 13. Desempate opcional por productType de la tienda solo si el título no matcheó nada
+  const typeNorm = normalizeForClassify(productType ?? "");
+  if (/\b(linea blanca|lavadora|refrigeradora)\b/.test(typeNorm)) return "linea-blanca";
+  if (/\b(aire|climatizacion)\b/.test(typeNorm)) return "aires-acondicionados";
+  if (/\b(televisor|tv)\b/.test(typeNorm)) return "televisores";
+  if (/\b(gaming|consola|videojuego)\b/.test(typeNorm)) return "gaming";
+  if (/\b(audio|sonido)\b/.test(typeNorm)) return "audio";
+  if (/\b(electrodomestico|hogar|cocina)\b/.test(typeNorm)) return "electrodomesticos";
+  if (/\b(periferico|impresora)\b/.test(typeNorm)) return "perifericos";
+
   return "accesorios";
 }
 

@@ -16,8 +16,8 @@ export const PRODUCT_CATEGORIES = [
 export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
 
 export const CATEGORY_LABELS: Record<ProductCategory, string> = {
-  computadoras: "Computadoras & Laptops",
-  celulares: "Celulares & Tablets",
+  computadoras: "Laptops, PC & Tablets",
+  celulares: "Celulares",
   televisores: "Televisores",
   "linea-blanca": "Línea Blanca",
   audio: "Audio & Sonido",
@@ -25,7 +25,7 @@ export const CATEGORY_LABELS: Record<ProductCategory, string> = {
   gaming: "Gaming & Consolas",
   "aires-acondicionados": "Aires Acondicionados",
   electrodomesticos: "Electrodomésticos",
-  accesorios: "Accesorios",
+  accesorios: "Accesorios & Wearables",
 };
 
 export const STORE_PLATFORMS = [
