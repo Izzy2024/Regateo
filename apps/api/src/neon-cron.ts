@@ -1,29 +1,33 @@
 // ============================================================================
-// Neon Function entrypoint: `cron` (Scheduled price refresh & alerts check)
-// Triggered by Neon Function Trigger (`type: "schedule"`).
+// Neon Function entrypoint: `cron` (Scheduled price refresh, stale link cleanup & alerts)
+// Triggered by Neon Function Trigger (`type: "schedule"` — cada 3 días 03:00 AM Panamá).
 // Authenticates deliveries with `parseTriggerDelivery` from `@neon/functions/triggers`.
 // ============================================================================
 import { parseTriggerDelivery } from "@neon/functions/triggers";
 import {
   evaluateAndDispatchPriceAlerts,
+  refreshProductAggregates,
   runScrapePipeline,
+  type ScrapeRunSummary,
 } from "@regateo/scraper";
-import { db, sql } from "@regateo/db";
+import { db, eq, inArray, sql, stores } from "@regateo/db";
+import { cacheInvalidatePrefix } from "./lib/cache";
 
 const DEFAULT_CRON_STORES = [
-  "lgshoppa",
-  "sonypa",
-  "samsungpa",
-  "raenco",
-  "pntpanama",
-  "evisionstore",
   "multimax",
+  "panafoto",
   "rodelag",
   "titan",
   "photura",
   "doitcenter",
   "yoytec",
   "ptytec",
+  "evisionstore",
+  "raenco",
+  "pntpanama",
+  "samsungpa",
+  "lgshoppa",
+  "sonypa",
 ];
 
 function parseStoresEnv(): string[] {
@@ -34,6 +38,96 @@ function parseStoresEnv(): string[] {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   return list.length > 0 ? list : DEFAULT_CRON_STORES;
+}
+
+/**
+ * Limpieza segura de enlaces muertos / productos retirados por la tienda.
+ * Solo actúa sobre tiendas cuyo scrape actual completó sano (sin `healthWarning`
+ * y con items guardados), evitando borrar catálogo si una tienda tuvo un bloqueo temporal:
+ *   1) > 3 días sin aparecer en una tienda sana  -> marca `in_stock = false`
+ *   2) > 9 días (~3 ciclos) sin aparecer         -> elimina el `store_listing` obsoleto
+ *   3) Elimina productos huérfanos sin listings (protegiendo favoritos y alertas)
+ */
+async function pruneStaleListingsForHealthyStores(
+  runs: ScrapeRunSummary[]
+): Promise<{
+  healthyStores: number;
+  markedOutOfStock: number;
+  deletedListings: number;
+  deletedOrphanProducts: number;
+}> {
+  const healthySlugs = runs
+    .filter((r) => r.status === "completed" && !r.healthWarning && r.itemsUpserted > 0)
+    .map((r) => r.storeSlug);
+
+  if (healthySlugs.length === 0) {
+    return {
+      healthyStores: 0,
+      markedOutOfStock: 0,
+      deletedListings: 0,
+      deletedOrphanProducts: 0,
+    };
+  }
+
+  const storeRows = await db
+    .select({ id: stores.id })
+    .from(stores)
+    .where(inArray(stores.slug, healthySlugs));
+
+  const healthyStoreIds = storeRows.map((s) => s.id);
+  if (healthyStoreIds.length === 0) {
+    return {
+      healthyStores: 0,
+      markedOutOfStock: 0,
+      deletedListings: 0,
+      deletedOrphanProducts: 0,
+    };
+  }
+
+  const storeIdList = sql.join(
+    healthyStoreIds.map((id) => sql`${id}::uuid`),
+    sql`, `
+  );
+
+  // 1) Marcar como agotados los listings no vistos en los últimos 3 días
+  const oosRes = await db.execute(sql`
+    UPDATE store_listings
+    SET in_stock = false, updated_at = NOW()
+    WHERE store_id IN (${storeIdList})
+      AND in_stock = true
+      AND last_scraped_at < NOW() - INTERVAL '3 days'
+  `);
+  const markedOutOfStock = Number((oosRes as unknown as { count?: number }).count ?? 0);
+
+  // 2) Eliminar listings desaparecidos hace más de 9 días (enlaces 404 / retirados)
+  const delListingsRes = await db.execute(sql`
+    DELETE FROM store_listings
+    WHERE store_id IN (${storeIdList})
+      AND last_scraped_at < NOW() - INTERVAL '9 days'
+  `);
+  const deletedListings = Number((delListingsRes as unknown as { count?: number }).count ?? 0);
+
+  // 3) Limpiar productos huérfanos sin listings (preservando favoritos y alertas)
+  const delOrphansRes = await db.execute(sql`
+    DELETE FROM products p
+    WHERE NOT EXISTS (SELECT 1 FROM store_listings sl WHERE sl.product_id = p.id)
+      AND NOT EXISTS (SELECT 1 FROM user_favorites f WHERE f.product_id = p.id)
+      AND NOT EXISTS (SELECT 1 FROM price_alerts a WHERE a.product_id = p.id)
+  `);
+  const deletedOrphanProducts = Number(
+    (delOrphansRes as unknown as { count?: number }).count ?? 0
+  );
+
+  if (markedOutOfStock > 0 || deletedListings > 0 || deletedOrphanProducts > 0) {
+    await refreshProductAggregates();
+  }
+
+  return {
+    healthyStores: healthyStoreIds.length,
+    markedOutOfStock,
+    deletedListings,
+    deletedOrphanProducts,
+  };
 }
 
 export default {
@@ -51,6 +145,8 @@ export default {
         ok: true,
         service: "regateo-cron-function",
         db: dbStatus,
+        firecrawlConfigured: Boolean(process.env.FIRECRAWL_API_KEY?.trim()),
+        maxPerStore: Number(process.env.CRON_MAX_PER_STORE ?? 3000),
         branch: process.env.NEON_BRANCH ?? null,
         timestamp: new Date().toISOString(),
       });
@@ -80,25 +176,37 @@ export default {
       );
     }
 
-    const stores = parseStoresEnv();
+    const targetStores = parseStoresEnv();
     const maxPerStore = Math.min(
       5000,
-      Math.max(10, Number(process.env.CRON_MAX_PER_STORE ?? 400))
+      Math.max(10, Number(process.env.CRON_MAX_PER_STORE ?? 3000))
     );
+    const useFirecrawl = Boolean(process.env.FIRECRAWL_API_KEY?.trim());
 
     const startedAt = Date.now();
     const runs = await runScrapePipeline({
-      stores,
+      stores: targetStores,
       maxPerStore,
-      useFirecrawl: false,
+      useFirecrawl,
+      concurrency: 2,
     });
+
+    const cleanup = await pruneStaleListingsForHealthyStores(runs);
     const alerts = await evaluateAndDispatchPriceAlerts();
+
+    // Invalidar caché en Upstash Redis para que la web refleje precios y limpieza al instante
+    await Promise.all([
+      cacheInvalidatePrefix("products:"),
+      cacheInvalidatePrefix("catalog:"),
+      cacheInvalidatePrefix("seo:"),
+    ]);
 
     const summary = runs.map((run) => ({
       storeSlug: run.storeSlug,
       status: run.status,
       itemsFound: run.itemsFound,
       itemsUpserted: run.itemsUpserted,
+      healthWarning: run.healthWarning ?? null,
       errorMessage: run.errorMessage ?? null,
     }));
 
@@ -108,8 +216,11 @@ export default {
       triggerName: invocation.trigger.name,
       scheduledAt: invocation.data.scheduledAt,
       durationMs: Date.now() - startedAt,
+      useFirecrawl,
+      maxPerStore,
       storesProcessed: summary.length,
       totalUpserted: summary.reduce((acc, r) => acc + r.itemsUpserted, 0),
+      cleanup,
       alertsEvaluated: alerts,
       runs: summary,
     });

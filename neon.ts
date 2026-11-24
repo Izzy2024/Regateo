@@ -43,9 +43,12 @@ export default defineConfig({
       env: {
         NODE_ENV: "production",
         CRON_STORES: { value: process.env.CRON_STORES, required: false },
-        CRON_MAX_PER_STORE: { value: process.env.CRON_MAX_PER_STORE ?? "400", required: false },
+        CRON_MAX_PER_STORE: { value: process.env.CRON_MAX_PER_STORE ?? "3000", required: false },
+        FIRECRAWL_API_KEY: { value: process.env.FIRECRAWL_API_KEY, required: false },
         RESEND_API_KEY: { value: process.env.RESEND_API_KEY, required: false },
         ALERTS_FROM_EMAIL: { value: process.env.ALERTS_FROM_EMAIL, required: false },
+        UPSTASH_REDIS_REST_URL: { value: process.env.UPSTASH_REDIS_REST_URL, required: false },
+        UPSTASH_REDIS_REST_TOKEN: { value: process.env.UPSTASH_REDIS_REST_TOKEN, required: false },
       },
     },
   },
@@ -53,8 +56,8 @@ export default defineConfig({
     "daily-price-refresh": {
       type: "schedule",
       function: "cron",
-      // Todos los días a las 08:00 UTC (03:00 AM hora de Panamá)
-      cron: "0 8 * * *",
+      // Cada 3 días a las 08:00 UTC (03:00 AM hora de Panamá) — evita bloqueos y ahorra Firecrawl
+      cron: "0 8 */3 * *",
       functionPath: "/cron",
     },
   },
