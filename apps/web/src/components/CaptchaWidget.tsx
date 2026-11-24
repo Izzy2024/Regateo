@@ -180,7 +180,7 @@ export function CaptchaWidget({
           turnstileWidgetIdRef.current = null;
         }
 
-        turnstileContainerRef.current.innerHTML = "";
+        turnstileContainerRef.current.replaceChildren();
 
         const widgetId = turnstile.render(turnstileContainerRef.current, {
           sitekey: effectiveSiteKey,

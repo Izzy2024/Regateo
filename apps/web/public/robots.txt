@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://app.regateoapp.com/sitemap.xml
+Sitemap: https://regateo.org/sitemap.xml

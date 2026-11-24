@@ -12,7 +12,7 @@ const SHELL_ASSETS = [
   "/logo-mark.webp",
   "/mascota-hero.webp",
 ];
-const NEVER_CACHE = [/^\/api\//, /^\/out\//];
+const NEVER_CACHE = [/^\/api(\/|$)/, /^\/auth(\/|$)/, /^\/out(\/|$)/];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -48,8 +48,13 @@ self.addEventListener("fetch", (event) => {
   }
   if (url.origin !== self.location.origin) return;
 
-  // Precios y clics medidos: siempre red, sin cache ni fallback.
-  if (NEVER_CACHE.some((pattern) => pattern.test(url.pathname))) return;
+  // Precios, auth y clics medidos: siempre red, sin cache ni fallback.
+  if (
+    request.headers.has("authorization") ||
+    NEVER_CACHE.some((pattern) => pattern.test(url.pathname))
+  ) {
+    return;
+  }
 
   // Navegación: network-first con fallback al shell cacheado (offline limpio).
   if (request.mode === "navigate") {
@@ -57,15 +62,17 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Shell estático: cache-first.
-  if (SHELL_ASSETS.includes(url.pathname)) {
+  // Shell estático: cache-first (solo rutas exactas sin query string y respuestas OK).
+  if (!url.search && SHELL_ASSETS.includes(url.pathname)) {
     event.respondWith(
       caches.match(request).then(
         (hit) =>
           hit ||
           fetch(request).then((response) => {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            if (response.ok && response.type === "basic") {
+              const copy = response.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            }
             return response;
           })
       )

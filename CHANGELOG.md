@@ -2,6 +2,14 @@
 
 Todos los cambios relevantes del proyecto se documentan aquí siguiendo [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.6.1] - 2026-11-24
+
+### Auditoría y Endurecimiento de Seguridad (OWASP + Cloudflare Edge + Neon Functions)
+- **CORS y Better Auth estrictos (`apps/api/src/app.ts`, `apps/api/src/lib/auth.ts`):** eliminado wildcard `https://*.workers.dev`; solo orígenes de `https://regateo.org`, `https://www.regateo.org` y `ALLOWED_ORIGINS` explícitos. Orígenes no autorizados ya no reciben `Access-Control-Allow-Origin`.
+- **Cabeceras de seguridad HTTP completas:** agregado `secureHeaders()` en Hono (`apps/api`) y `apps/web/public/_headers` en Cloudflare Workers Static Assets (`HSTS`, `Content-Security-Policy` sin `unsafe-inline` en scripts, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`).
+- **Prevención XSS / HTML Injection / Timing Attacks:** escape seguro `safeJsonLd()` en JSON-LD, `escapeHtml()` en correos de alertas y restablecimiento de contraseña, `replaceChildren()` en lugar de `innerHTML` en `CaptchaWidget.tsx`, y comparación `timingSafeEqual` para `CRON_SECRET`.
+- **Rate-limiting y dependencias:** añadido rate-limit en `POST /api/auth/reset-password` y `GET /api/products`, ocultada `neonAuth.baseUrl` pública en `/api/auth/providers`, endurecido Service Worker (`apps/web/public/sw.js`) y parcheada vulnerabilidad HIGH `drizzle-orm` (`GHSA-gpj5-g38j-94v9`) actualizando a `0.45.4`.
+
 ## [0.6.0] - 2026-11-23
 
 ### Infraestructura Backend en Neon (Postgres, Auth, AI Gateway y Realtime)

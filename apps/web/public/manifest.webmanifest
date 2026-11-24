@@ -1,7 +1,7 @@
 {
   "name": "Regateo — Precios de Electrónica en Panamá",
   "short_name": "Regateo",
-  "description": "Compara precios reales de electrónica entre 8 tiendas de Panamá: Panafoto, Multimax, Rodelag, Almacenes Titán, Photura, Do it Center, Yoytec y PTYTEC.",
+  "description": "Compara precios reales de electrónica entre 14 tiendas de Panamá: Panafoto, Multimax, Rodelag, Almacenes Titán, Photura, Do it Center, Yoytec, PTYTEC, eVision Store, Raenco, PlayNTrade, Samsung, LG y Sony.",
   "lang": "es-PA",
   "start_url": "/",
   "scope": "/",

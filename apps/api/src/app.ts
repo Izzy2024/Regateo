@@ -1,9 +1,11 @@
 // ============================================================================
 // @regateo/api — Hono app con todas las rutas encadenadas (RPC AppType).
 // ============================================================================
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
+import { secureHeaders } from "hono/secure-headers";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { ZodError } from "zod";
@@ -150,7 +152,7 @@ async function sendAlertConfirmationEmail(
         process.env.EMAIL_FROM ?? "Regateo <onboarding@resend.dev>",
       to,
       subject: "Confirma tu alerta de precio — Regateo",
-      html: `<p>Hola! Solicitaste una alerta de precio para <strong>${productName}</strong>.</p><p>Confírmala aquí: <a href="${confirmUrl}">Activar mi alerta</a></p><p>Si no fuiste tú, ignora este correo.</p>`,
+      html: `<p>Hola! Solicitaste una alerta de precio para <strong>${escapeHtml(productName)}</strong>.</p><p>Confírmala aquí: <a href="${escapeHtml(confirmUrl)}">Activar mi alerta</a></p><p>Si no fuiste tú, ignora este correo.</p>`,
     }),
     signal: AbortSignal.timeout(5000),
   }).catch((error) => {
@@ -464,7 +466,6 @@ const extraAllowedOrigins = (process.env.ALLOWED_ORIGINS ?? "")
 function isAllowedCorsOrigin(origin: string): boolean {
   if (origin === webUrl) return true;
   if (extraAllowedOrigins.includes(origin)) return true;
-  if (/^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/i.test(origin)) return true;
   if (/^https:\/\/([a-z0-9-]+\.)?regateo\.(pa|org)$/i.test(origin)) return true;
   if (!isProduction && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
     return true;
@@ -472,13 +473,53 @@ function isAllowedCorsOrigin(origin: string): boolean {
   return false;
 }
 
+function safeSecretEquals(candidate: string | undefined, expected: string): boolean {
+  if (!candidate) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function isAuthorizedCron(c: {
+  req: { header: (name: string) => string | undefined };
+}): boolean {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) return false;
+  const headerSecret = c.req.header("x-cron-secret");
+  const authorization = c.req.header("authorization");
+  const bearer = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : undefined;
+  return (
+    safeSecretEquals(headerSecret, cronSecret) ||
+    safeSecretEquals(bearer, cronSecret)
+  );
+}
+
+app.use(
+  "*",
+  secureHeaders({
+    xFrameOptions: "DENY",
+    xContentTypeOptions: "nosniff",
+    referrerPolicy: "strict-origin-when-cross-origin",
+    strictTransportSecurity: "max-age=31536000; includeSubDomains",
+    permissionsPolicy: {
+      camera: [],
+      microphone: [],
+      geolocation: [],
+      payment: [],
+      usb: [],
+    },
+  })
+);
+
 app.use(
   "*",
   cors({
     origin: (origin) => {
       if (!origin) return webUrl;
       if (isAllowedCorsOrigin(origin)) return origin;
-      return webUrl;
+      return "";
     },
     credentials: true,
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -562,6 +603,14 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/** Serialización segura de JSON-LD para incrustar en <script type="application/ld+json">. */
+function safeJsonLd(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
+}
+
 /** Página SEO de colección (categoría/tienda) con OG + JSON-LD + redirect SPA. */
 function seoCollectionHtml(input: {
   title: string;
@@ -594,7 +643,7 @@ function seoCollectionHtml(input: {
 <meta property="og:title" content="${escapeHtml(input.title)}">
 <meta property="og:description" content="${escapeHtml(input.description)}">
 <meta name="twitter:card" content="summary">
-<script type="application/ld+json">${JSON.stringify(input.jsonLd)}</script>
+<script type="application/ld+json">${safeJsonLd(input.jsonLd)}</script>
 </head>
 <body>
 <main style="font-family:system-ui,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem">
@@ -677,7 +726,6 @@ const routes = app
       ),
       neonAuth: {
         configured: neonAuth.configured,
-        baseUrl: neonAuth.baseUrl,
       },
     });
   })
@@ -708,11 +756,17 @@ const routes = app
     requireCaptchaMiddleware,
     (c) => authHandler(c.req.raw)
   )
+  .post(
+    "/api/auth/reset-password",
+    rateLimitMiddleware({ limit: 6, windowSec: 60, bucket: "auth-reset-confirm" }),
+    (c) => authHandler(c.req.raw)
+  )
   .all("/api/auth/*", (c) => authHandler(c.req.raw))
 
   // ------------------------------------------------------------- products
   .get(
     "/api/products",
+    rateLimitMiddleware({ limit: 120, windowSec: 60, bucket: "products-read" }),
     zValidator("query", productSearchQuerySchema, validationHook),
     async (c) => {
       const query: ProductSearchQuery = c.req.valid("query");
@@ -1249,18 +1303,8 @@ const routes = app
     "/api/cron/scrape",
     zValidator("query", triggerScrapeQuerySchema, validationHook),
     async (c) => {
-      const cronSecret = process.env.CRON_SECRET;
-      const headerSecret = c.req.header("x-cron-secret");
-      const authorization = c.req.header("authorization");
-      const bearer = authorization?.startsWith("Bearer ")
-        ? authorization.slice("Bearer ".length)
-        : undefined;
-
       // Siempre protegido con CRON_SECRET — nunca expuesto a usuarios públicos
-      const authorized = Boolean(
-        cronSecret && (headerSecret === cronSecret || bearer === cronSecret)
-      );
-      if (!authorized) {
+      if (!isAuthorizedCron(c)) {
         return c.json(
           { error: "unauthorized", message: "Acceso restringido a automatización interna (CRON_SECRET)." },
           401
@@ -1381,14 +1425,7 @@ const routes = app
 
   // ------------------------------------------------------------- cache flush interno (post-scrape CLI)
   .post("/api/cron/invalidate-cache", async (c) => {
-    const cronSecret = process.env.CRON_SECRET;
-    const headerSecret = c.req.header("x-cron-secret");
-    const authorization = c.req.header("authorization");
-    const bearer = authorization?.startsWith("Bearer ")
-      ? authorization.slice("Bearer ".length)
-      : undefined;
-
-    if (!cronSecret || (headerSecret !== cronSecret && bearer !== cronSecret)) {
+    if (!isAuthorizedCron(c)) {
       return c.json(
         { error: "unauthorized", message: "Secreto de cron inválido." },
         401
@@ -1531,16 +1568,9 @@ const routes = app
       );
     }
 
-    const escapeHtml = (text: string): string =>
-      text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-
     const origin = new URL(c.req.url).origin;
-    const spaUrl = `${webUrl}/?producto=${encodeURIComponent(slug)}`;
+    const encodedSlug = encodeURIComponent(slug);
+    const spaUrl = `${webUrl}/?producto=${encodedSlug}`;
     const bestUsd = formatUsdFromCents(product.bestPriceCents);
     const savingsUsd =
       product.savingsCents > 0 ? formatUsdFromCents(product.savingsCents) : null;
@@ -1583,15 +1613,15 @@ const routes = app
 <meta charset="utf-8">
 <title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(description)}">
-<link rel="canonical" href="${origin}/p/${slug}">
+<link rel="canonical" href="${origin}/p/${encodedSlug}">
 <meta property="og:type" content="product">
 <meta property="og:site_name" content="Regateo">
 <meta property="og:title" content="${escapeHtml(title)}">
 <meta property="og:description" content="${escapeHtml(description)}">
 <meta property="og:image" content="${escapeHtml(product.imageUrl ?? "")}">
-<meta property="og:url" content="${origin}/p/${slug}">
+<meta property="og:url" content="${origin}/p/${encodedSlug}">
 <meta name="twitter:card" content="summary_large_image">
-<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
+<script type="application/ld+json">${safeJsonLd(jsonLd)}</script>
 </head>
 <body>
 <main style="font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem">
@@ -1785,14 +1815,7 @@ const routes = app
     "/api/admin/analytics",
     zValidator("query", analyticsQuerySchema, validationHook),
     async (c) => {
-      const cronSecret = process.env.CRON_SECRET;
-      const headerSecret = c.req.header("x-cron-secret");
-      const authorization = c.req.header("authorization");
-      const bearer = authorization?.startsWith("Bearer ")
-        ? authorization.slice("Bearer ".length)
-        : undefined;
-
-      if (!cronSecret || (headerSecret !== cronSecret && bearer !== cronSecret)) {
+      if (!isAuthorizedCron(c)) {
         return c.json(
           { error: "unauthorized", message: "Secreto de cron inválido." },
           401
