@@ -1,4 +1,4 @@
-import type { BuyingGuideDTO, ProductSummaryDTO } from "@regateo/shared";
+import { PANAMA_STORES, type BuyingGuideDTO, type ProductSummaryDTO } from "@regateo/shared";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -198,8 +198,8 @@ export function GuidesView() {
           </h1>
           <p className="mt-2 max-w-[75ch] text-sm leading-relaxed text-[#525866]">
             Ranking de los mejores productos por categoría según los precios reales de
-            las 8 tiendas monitoreadas. Se recalculan solas en cada barrido diario
-            (08:00 UTC): nada de listas patrocinadas.
+            las {PANAMA_STORES.filter((s) => s.enabled).length} tiendas monitoreadas. Se recalculan solas en cada barrido
+            automático (cada 3 días): nada de listas patrocinadas.
           </p>
         </div>
       </BlurFade>

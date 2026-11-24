@@ -25,9 +25,9 @@ interface CategoryPersona {
 }
 
 const DEFAULT_PERSONA: CategoryPersona = {
-  label: "Radar 8 tiendas",
-  badge: "Mejor precio USD",
-  speech: "¡Ey! Antes de pagar de más, reviso las 8 tiendas por ti.",
+  label: "Rega · IA",
+  badge: "Asistente Regateo AI",
+  speech: "¡Hola! Soy Rega. Tócame y te busco el mejor precio entre todas las tiendas.",
   accent: "#E64825",
   softBg: "#FEF2EE",
   border: "#FBCFC3",
@@ -186,7 +186,9 @@ export function HeroMascotStage({
 
   const speechText = isSearching
     ? `Escaneando «${trimmedSearch.slice(0, 26)}${trimmedSearch.length > 26 ? "…" : ""}» en ${monitoredStoresCount} tiendas…`
-    : persona.speech;
+    : effectiveCategory
+    ? persona.speech
+    : `¡Hola! Soy Rega. Tócame y te busco el mejor precio en ${monitoredStoresCount} tiendas.`;
 
   const speechKey = isSearching
     ? `search-${trimmedSearch.slice(0, 12).toLowerCase()}`
@@ -269,6 +271,14 @@ export function HeroMascotStage({
           <p className="mt-1 text-xs leading-snug font-medium text-[#111315]">
             {speechText}
           </p>
+          <button
+            type="button"
+            onClick={handleOpenAiFromMascot}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-[#E64825] px-2.5 py-1 text-[11px] font-bold text-white shadow-xs transition-colors hover:bg-[#CC3B1B] cursor-pointer"
+          >
+            <Sparkles className="h-3 w-3" />
+            Pregúntale a Rega (IA)
+          </button>
         </div>
       </div>
 
@@ -460,13 +470,15 @@ export function HeroMascotStage({
             className="pointer-events-none absolute bottom-2 h-3 w-28 rounded-full bg-[#111315] blur-[5px]"
           />
 
-          {/* Interactive Mascot Character with Category-Switch Bounce & 3D Tilt */}
+          {/* Interactive Mascot Character: 1 click opens Regateo AI */}
           <motion.button
             type="button"
-            onClick={handleMascotClick}
-            onDoubleClick={handleOpenAiFromMascot}
-            aria-label="Mascota de Regateo — haz clic para saludar o explora categorías"
-            title="Mascota de Regateo · cambia de categoría para verla reaccionar"
+            onClick={() => {
+              handleMascotClick();
+              handleOpenAiFromMascot();
+            }}
+            aria-label="Rega — Mascota de Regateo AI. Haz clic para preguntar precios."
+            title="Haz clic en Rega para preguntarle a Regateo AI"
             style={{
               rotateX: prefersReducedMotion ? 0 : rotateX,
               rotateY: prefersReducedMotion ? 0 : rotateY,
@@ -516,8 +528,18 @@ export function HeroMascotStage({
           </motion.button>
         </div>
 
+        {/* Prominent CTA button so visitors immediately discover Rega / Regateo AI */}
+        <button
+          type="button"
+          onClick={handleOpenAiFromMascot}
+          className="relative z-20 mt-1 flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#111315] px-3 py-2 text-xs font-bold text-white shadow-xs transition-all hover:bg-[#E64825] cursor-pointer"
+        >
+          <Sparkles className="h-3.5 w-3.5 text-[#FDBA74]" />
+          <span>Pregúntale a Rega (IA)</span>
+        </button>
+
         {/* Category-Reactive Mini Dock right below the mascot */}
-        <div className="relative z-20 mt-1 flex w-full items-center justify-between gap-1 rounded-xl border border-[#E7E5DF] bg-white px-1.5 py-1">
+        <div className="relative z-20 mt-2 flex w-full items-center justify-between gap-1 rounded-xl border border-[#E7E5DF] bg-white px-1.5 py-1">
           {QUICK_STAGE_CATEGORIES.map((cat) => {
             const isSelected = activeCategory === cat;
             const catPersona = CATEGORY_PERSONAS[cat];

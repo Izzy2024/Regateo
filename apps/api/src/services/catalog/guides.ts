@@ -40,13 +40,15 @@ const GUIDE_DEFINITIONS: GuideDefinition[] = [
     slug: "laptops-menos-700-panama",
     title: "Mejores laptops por menos de $700 en Panamá",
     subtitle:
-      "Laptops comparadas entre tiendas panameñas por debajo de $700, sin accesorios.",
+      "Laptops reales comparadas entre tiendas panameñas por debajo de $700 (sin tablets ni accesorios).",
     category: "computadoras",
     maxPriceUsd: 700,
     extraWhere: () =>
       and(
+        gte(products.bestPriceCents, 18000),
         lte(products.bestPriceCents, 70000),
-        sql`unaccent(lower(${products.canonicalName})) not like '%accesorio%'`
+        sql`unaccent(lower(${products.canonicalName})) ~ '\\m(laptop|notebook|macbook|chromebook|ultrabook|portatil)\\M'`,
+        sql`unaccent(lower(${products.canonicalName})) !~ '\\m(teclado|keyboard|mouse|raton|tablet|ipad|monitor|funda|estuche|mochila|maletin|soporte|base|cargador|adaptador|cable|bateria|tinta|cartucho|accesorio)\\M'`
       ),
     orderBy: "stores-then-price",
   },

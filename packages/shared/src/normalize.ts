@@ -141,12 +141,18 @@ export function classifyCategory(title: string, productType?: string | null): Pr
     /\b(tinta|cartucho|toner|botella de tinta|funda|carcasa|case|cover|protector|mica|vidrio templado|estuche|correa|soporte|brazo|stand|mount|base enfriadora|base para|cable|adaptador|cargador|power\s?bank|bateria externa|bateria para|repuesto|cambio\/instalacion|instalacion de|filtro de agua|bolsa para|mochila|maletin|memoria usb|pendrive|micro\s?sd|tarjeta sd|capturadora|regleta|protector de voltaje|ups)\b/.test(
       head
     );
+  // También atrapa fundas cuyo nombre va al final ("Galaxy S26+ Clear Magnet Case")
+  const isStandaloneCaseOrProtector =
+    /\b(clear\s+(?:magnet\s+)?case|silicone\s+(?:magnet\s+)?case|magnet\s+case|leather\s+case|standing\s+grip\s+case|protective\s+case|screen\s+protector|vidrio\s+templado)\b/.test(
+      titleNorm
+    ) && !/\b(con\s+(?:folio\s+)?case|incluye\s+(?:funda|case|estuche)|\+\s*(?:funda|case|estuche))\b/.test(titleNorm);
+
   const isPrimaryComputerOrPhoneHead =
     /^(?:[a-z0-9+&'.\-]+\s+){0,2}(laptop|notebook|macbook|computadora?|pc\b|all[\s-]in[\s-]one|chromebook|imac|desktop|mini\s?pc|celular|smartphone|iphone|telefono|televisor|smart\s?tv|lavadora|secadora|refrigeradora|nevera|aire acondicionado)\b/.test(
       head
     );
 
-  if (isConsumableOrAccessoryHead && !isPrimaryComputerOrPhoneHead) {
+  if ((isConsumableOrAccessoryHead || isStandaloneCaseOrProtector) && !isPrimaryComputerOrPhoneHead) {
     return "accesorios";
   }
 
@@ -214,7 +220,7 @@ export function classifyCategory(title: string, productType?: string | null): Pr
 
   // 9. Celulares / Smartphones únicamente (sin tablets ni relojes ni fundas)
   if (
-    /\b(celular|smartphone|iphone|galaxy\s?(?:s\d|a\d|z\s?(?:fold|flip)|m\d|note)|redmi\s?(?:note|\d|a\d)|poco\s?[xfmc]\d|moto\s?[ge]\d|motorola\s?(?:edge|razr|moto)|honor\s?(?:magic|x\d|\d{2,3})|xiaomi\s?1\d|tecno\s?(?:spark|camon|pova)|infinix\s?(?:hot|note|smart|gt)|realme\s?(?:c\d|\d)|pixel\s?\d)\b/.test(
+    /\b(celular|smartphone|iphone|(?:galaxy|samsung)\s?(?:s\d{1,2}\+?|a\d{2}|z\s?(?:fold|flip)|m\d{2}|note)|redmi\s?(?:note|\d|a\d)|poco\s?[xfmc]\d|moto\s?[ge]\d|motorola\s?(?:edge|razr|moto)|honor\s?(?:magic|x\d|\d{2,3})|xiaomi\s?1\d|tecno\s?(?:spark|camon|pova)|infinix\s?(?:hot|note|smart|gt)|realme\s?(?:c\d|\d)|pixel\s?\d)\b/.test(
       titleNorm
     )
   ) {

@@ -1,3 +1,4 @@
+import { PANAMA_STORES } from "@regateo/shared";
 import {
   AlertCircle,
   ArrowRight,
@@ -98,7 +99,7 @@ export function AccountSpaceView() {
                 </h1>
                 <p className="mt-3 max-w-[60ch] text-[15px] leading-relaxed text-[#525866]">
                   Crea tu cuenta gratuita en segundos para rastrear bajadas de precio en
-                  tus favoritos, armar presupuestos optimizados entre las 8 tiendas activas
+                  tus favoritos, armar presupuestos optimizados entre las {PANAMA_STORES.filter((s) => s.enabled).length} tiendas activas
                   y controlar todas tus alertas desde un solo lugar.
                 </p>
 
@@ -327,7 +328,7 @@ export function AccountSpaceView() {
                 </Badge>
               </div>
               <p className="mt-0.5 text-xs text-[#525866]">
-                {user.email} · Sincronizado en las 8 tiendas activas de Panamá
+                {user.email} · Sincronizado en las {PANAMA_STORES.filter((s) => s.enabled).length} tiendas activas de Panamá
               </p>
             </div>
           </div>
